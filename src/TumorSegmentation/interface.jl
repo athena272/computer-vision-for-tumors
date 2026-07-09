@@ -76,6 +76,10 @@ function rel_path(state::InterfaceState, path::String)
     return replace(relpath(path, state.project_root), '\\' => '/')
 end
 
+function parse_form_body(body)
+    return URIs.queryparams(String(body))
+end
+
 function list_example_images(state::InterfaceState)
     samples = list_samples(state.cfg.dataset_path; max_per_class = 8)
     return [s.image_path for s in samples]
@@ -304,15 +308,15 @@ function serve_interface(; project_root::String = pwd(), port::Int = INTERFACE_P
             if !model_ready(state)
                 return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], page_predict_form(state, "Treine o modelo antes de gerar máscaras."))
             end
-            form = HTTP.parseform(String(req.body))
-            image_rel = get(form, "image", [""])[1]
+            form = parse_form_body(req.body)
+            image_rel = get(form, "image", "")
             image_rel, pred_rel, comparison_rel = run_predict!(state, image_rel)
             html = page_predict_result(state, image_rel, pred_rel, comparison_rel)
             return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], html)
         elseif req.method == "GET" && path == "/train"
             return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], page_train(state))
         elseif req.method == "POST" && path == "/train"
-            form = HTTP.parseform(String(req.body))
+            form = parse_form_body(req.body)
             quick = haskey(form, "quick")
             start_training!(state; quick = quick)
             return HTTP.Response(302, ["Location" => "/train"], "")
@@ -327,7 +331,7 @@ function serve_interface(; project_root::String = pwd(), port::Int = INTERFACE_P
                 return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], page_evaluate(state, msg))
             end
         elseif req.method == "GET" && path == "/file"
-            params = URI.queryparams(URI.query(uri))
+            params = URIs.queryparams(uri.query)
             rel = get(params, "path", "")
             isempty(rel) && return HTTP.Response(400, "path ausente")
             full = project_relative(state, rel)
