@@ -26,33 +26,82 @@ A U-Net foi criada exatamente para isso.
 
 ## Anatomia da U-Net (formato em U)
 
+### Visão geral — o desenho em “U”
+
+Cada nível do **encoder** reduz a resolução e guarda um **skip** (linha tracejada). O **decoder** sobe de volta e **concatena** esses skips para recuperar bordas finas:
+
+```mermaid
+flowchart LR
+    IN(["Entrada<br/>256×256"])
+
+    E1["Enc 1<br/>64 ch"]
+    E2["Enc 2<br/>128 ch"]
+    E3["Enc 3<br/>256 ch"]
+    E4["Enc 4<br/>512 ch"]
+    BN["Bottleneck<br/>1024 ch"]
+    D4["Dec 4"]
+    D3["Dec 3"]
+    D2["Dec 2"]
+    D1["Dec 1"]
+    OUT(["Máscara<br/>256×256"])
+
+    IN --> E1 --> E2 --> E3 --> E4 --> BN --> D4 --> D3 --> D2 --> D1 --> OUT
+
+    E1 -. "skip₁" .-> D1
+    E2 -. "skip₂" .-> D2
+    E3 -. "skip₃" .-> D3
+    E4 -. "skip₄" .-> D4
 ```
-Entrada 256×256
-    │
-    ▼
-┌─────────┐
-│ Encoder │  → reduz tamanho, aumenta “entendimento”
-│  Nível1 │  256 → 128  (guarda skip₁)
-│  Nível2 │  128 → 64   (guarda skip₂)
-│  Nível3 │  64 → 32    (guarda skip₃)
-│  Nível4 │  32 → 16    (guarda skip₄)
-└─────────┘
-    │
-    ▼
- Bottleneck (16×16)  → representação mais compacta
-    │
-    ▼
-┌─────────┐
-│ Decoder │  → aumenta tamanho de volta
-│  Nível4 │  16 → 32   (+ skip₄)
-│  Nível3 │  32 → 64   (+ skip₃)
-│  Nível2 │  64 → 128  (+ skip₂)
-│  Nível1 │  128 → 256 (+ skip₁)
-└─────────┘
-    │
-    ▼
-Máscara 256×256 (probabilidade por pixel)
+
+As setas tracejadas formam o “U”: informação de alta resolução do encoder volta direto para o decoder.
+
+### Detalhe de cada bloco (implementação deste projeto)
+
+```mermaid
+flowchart TB
+    IN(["Ultrassom em escala de cinza<br/>256 × 256 × 1 canal"])
+
+    subgraph ENC["Encoder — contrair a imagem"]
+        direction TB
+        D1["Down 1<br/>Conv 3×3 ×2 + ReLU · 64 filtros<br/>MaxPool 2×2 → 128×128"]
+        D2["Down 2<br/>Conv 3×3 ×2 + ReLU · 128 filtros<br/>MaxPool 2×2 → 64×64"]
+        D3["Down 3<br/>Conv 3×3 ×2 + ReLU · 256 filtros<br/>MaxPool 2×2 → 32×32"]
+        D4["Down 4<br/>Conv 3×3 ×2 + ReLU · 512 filtros<br/>MaxPool 2×2 → 16×16"]
+        D1 --> D2 --> D3 --> D4
+    end
+
+    BOT["Bottleneck<br/>Conv 3×3 ×2 + ReLU · 1024 filtros<br/>16 × 16"]
+
+    subgraph DEC["Decoder — expandir de volta"]
+        direction TB
+        U4["Up 4<br/>Upsample ×2 + concat skip₄<br/>Conv 3×3 ×2 + ReLU → 32×32"]
+        U3["Up 3<br/>Upsample ×2 + concat skip₃<br/>Conv 3×3 ×2 + ReLU → 64×64"]
+        U2["Up 2<br/>Upsample ×2 + concat skip₂<br/>Conv 3×3 ×2 + ReLU → 128×128"]
+        U1["Up 1<br/>Upsample ×2 + concat skip₁<br/>Conv 3×3 ×2 + ReLU → 256×256"]
+        U4 --> U3 --> U2 --> U1
+    end
+
+    FC["Conv 1×1 → 1 canal<br/>Sigmoid (probabilidade por pixel)"]
+    OUT(["Máscara prevista<br/>256 × 256"])
+
+    IN --> D1
+    D4 --> BOT --> U4 --> U1 --> FC --> OUT
+
+    D1 -. "skip₁ · 128×128" .-> U1
+    D2 -. "skip₂ · 64×64" .-> U2
+    D3 -. "skip₃ · 32×32" .-> U3
+    D4 -. "skip₄ · 16×16" .-> U4
 ```
+
+| Parte | O que faz neste projeto |
+|-------|-------------------------|
+| **Conv 3×3 ×2** | Duas convoluções com ReLU — extrai bordas e texturas |
+| **MaxPool 2×2** | Divide altura e largura pela metade |
+| **Skip** | Saída do bloco convolucional *antes* do pool, concatenada no decoder |
+| **Upsample ×2** | Dobra altura e largura (vizinho mais próximo) |
+| **Conv 1×1 + Sigmoid** | Um filtro por pixel → probabilidade de tumor (0 a 1) |
+
+Código correspondente: [`src/TumorSegmentation/unet.jl`](../src/TumorSegmentation/unet.jl).
 
 ### Encoder (contrair)
 

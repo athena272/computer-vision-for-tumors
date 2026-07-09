@@ -19,9 +19,18 @@ Imagine que você precisa desenhar o contorno de um tumor em uma foto:
 2. **Decoder (caminho de expansão):** depois ela “aproxima o zoom” de volta ao tamanho original para desenhar pixel a pixel onde está o tumor.
 3. **Skip connections:** atalhos que ligam camadas do encoder ao decoder, ajudando a preservar detalhes finos das bordas.
 
-O formato da arquitetura lembra a letra **U** — daí o nome **U-Net**.
+O formato da arquitetura lembra a letra **U** — daí o nome **U-Net**:
 
-Mais detalhes em [docs/guia-unet.md](docs/guia-unet.md).
+```mermaid
+flowchart LR
+    IN(["Entrada"]) --> E1 --> E2 --> E3 --> E4 --> BN["Bottleneck"] --> D4 --> D3 --> D2 --> D1 --> OUT(["Máscara"])
+    E1 -.-> D1
+    E2 -.-> D2
+    E3 -.-> D3
+    E4 -.-> D4
+```
+
+Mais detalhes (dimensões, canais e blocos) em [docs/guia-unet.md](docs/guia-unet.md).
 
 ---
 
@@ -42,6 +51,14 @@ julia --project -e "using Pkg; Pkg.instantiate()"
 
 Na primeira execução, o Julia baixa e compila as dependências (Flux, Images, etc.). Isso pode levar alguns minutos.
 
+Se o comando terminar **sem mensagem de erro**, a instalação deu certo. Para confirmar:
+
+```bash
+julia --project -e "using TumorSegmentation; println(\"OK\")"
+```
+
+Deve imprimir `OK`. Se aparecer erro, rode `Pkg.instantiate()` de novo e aguarde a compilação terminar.
+
 ---
 
 ## Modo fácil: interface web
@@ -50,8 +67,19 @@ Se você prefere **não decorar comandos**, use a interface no navegador:
 
 ### Opção A — duplo clique (Windows)
 
-1. Instale as dependências uma vez (comando abaixo).
+1. Instale as dependências uma vez (seção [Instalação](#instalação) acima).
 2. Dê **duplo clique** em [`run.bat`](run.bat) na raiz do projeto.
+
+   O arquivo `run.bat` já vem no repositório. Se não existir na sua cópia, crie na raiz com este conteúdo:
+
+   ```bat
+   @echo off
+   cd /d "%~dp0"
+   echo Abrindo interface web do projeto U-Net...
+   julia --project scripts/interface.jl
+   pause
+   ```
+
 3. O navegador abrirá em `http://127.0.0.1:8765/`.
 
 ### Opção B — um comando no terminal
