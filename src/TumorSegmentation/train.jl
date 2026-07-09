@@ -45,7 +45,7 @@ function train_model!(model, train_loader, val_loader; cfg::Config = Config(), o
             x = x |> device
             y = y |> device
             loss, grads = Flux.withgradient(model) do m
-                combined_loss(m(x), y)
+                training_loss(m, x, y, cfg)
             end
             Flux.update!(opt, model, grads[1])
             push!(epoch_losses, Float32(loss))
@@ -63,10 +63,17 @@ function train_model!(model, train_loader, val_loader; cfg::Config = Config(), o
         val_dice = 0.0
         run_validation = val_loader !== nothing && (epoch % val_every == 0 || epoch == cfg.epochs)
         if run_validation
-            metrics = evaluate_model(model, val_loader)
+            tumor_only = uses_weighted_training(cfg)
+            metrics = evaluate_model(
+                model,
+                val_loader;
+                threshold = cfg.prediction_threshold,
+                tumor_only = tumor_only,
+            )
             yield()
             val_dice = metrics.dice
-            println("Época $epoch/$(cfg.epochs) | loss treino: $(round(train_loss, digits=4)) | Dice validação: $(round(val_dice, digits=4))")
+            dice_label = tumor_only ? "Dice validação (com tumor)" : "Dice validação"
+            println("Época $epoch/$(cfg.epochs) | loss treino: $(round(train_loss, digits=4)) | $dice_label: $(round(val_dice, digits=4))")
 
             notify((
                 phase = :epoch,

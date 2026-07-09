@@ -52,7 +52,13 @@ function run_evaluation!(cfg::Config = load_config(); on_progress = nothing)
     )
 end
 
-function evaluate_model(model, dataloader; threshold::Float64 = 0.5, on_progress = nothing)
+function evaluate_model(
+    model,
+    dataloader;
+    threshold::Float64 = 0.5,
+    on_progress = nothing,
+    tumor_only::Bool = false,
+)
     notify(progress) = on_progress !== nothing && on_progress(progress)
     dice_scores = Float64[]
     iou_scores = Float64[]
@@ -64,8 +70,9 @@ function evaluate_model(model, dataloader; threshold::Float64 = 0.5, on_progress
         batch_idx += 1
         y_pred = model(x)
         for i in 1:size(x, 4)
-            pred_i = y_pred[:, :, :, i]
             true_i = y[:, :, :, i]
+            tumor_only && sum(true_i) == 0 && continue
+            pred_i = y_pred[:, :, :, i]
             push!(dice_scores, dice_coefficient(pred_i, true_i; threshold = threshold))
             push!(iou_scores, iou_coefficient(pred_i, true_i; threshold = threshold))
             push!(acc_scores, pixel_accuracy(pred_i, true_i; threshold = threshold))

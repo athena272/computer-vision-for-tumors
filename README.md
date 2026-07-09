@@ -161,7 +161,7 @@ Métricas exibidas:
 ## Executar os testes automatizados
 
 ```bash
-julia --project -e "include(\"test/runtests.jl\")"
+julia --project test/runtests.jl
 ```
 
 Os testes usam dados sintéticos e não exigem o dataset completo no CI.

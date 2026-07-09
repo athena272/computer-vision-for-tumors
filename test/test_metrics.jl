@@ -1,4 +1,5 @@
 using Test
+using Flux
 
 @testset "Metrics" begin
     perfect = ones(Float32, 32, 32)
@@ -22,4 +23,21 @@ end
     @test bce_loss(y_pred, y_true) >= 0
     @test dice_loss(y_pred, y_true) >= 0
     @test combined_loss(y_pred, y_true) >= 0
+    @test TumorSegmentation.weighted_bce_loss(y_pred, y_true; pos_weight = 5.0f0) >= 0
+    @test TumorSegmentation.batch_combined_loss(
+        y_pred,
+        y_true;
+        tumor_sample_weight = 3.0f0,
+        pos_pixel_weight = 5.0f0,
+    ) >= 0
+
+    model = build_unet(in_channels = 1, out_channels = 1)
+    cfg = Config(tumor_sample_weight = 4.0, pos_pixel_weight = 12.0)
+    x = rand(Float32, 32, 32, 1, 2)
+    y_batch = rand(Float32, 32, 32, 1, 2)
+    loss, grads = Flux.withgradient(model) do m
+        TumorSegmentation.training_loss(m, x, y_batch, cfg)
+    end
+    @test loss > 0
+    @test grads[1] !== nothing
 end
