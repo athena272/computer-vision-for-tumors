@@ -54,7 +54,7 @@ Na primeira execução, o Julia baixa e compila as dependências (Flux, Images, 
 Se o comando terminar **sem mensagem de erro**, a instalação deu certo. Para confirmar:
 
 ```bash
-julia --project -e "using TumorSegmentation; println(\"OK\")"
+julia --project -e "using TumorSegmentation; println(:OK)"
 ```
 
 Deve imprimir `OK`. Se aparecer erro, rode `Pkg.instantiate()` de novo e aguarde a compilação terminar.
