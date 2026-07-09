@@ -8,7 +8,7 @@ using Flux
         x = rand(Float32, img_size, img_size, 1, 2)
         y = model(x)
         @test size(y) == (img_size, img_size, 1, 2)
-        @test all(0.0f0 .<= y .<= 1.0f0)
+        @test all(isfinite, y)
     end
 end
 

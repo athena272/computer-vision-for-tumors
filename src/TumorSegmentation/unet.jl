@@ -105,7 +105,12 @@ function (model::UNet)(x)
     u4 = model.up4(u3, skip1)
 
     logits = model.final_conv(u4)
-    return sigmoid.(logits)
+    return logits
+end
+
+"""Converte logits da U-Net em probabilidades (0–1)."""
+function model_probabilities(model, x)
+    return sigmoid.(model(x))
 end
 
 UNet(; kwargs...) = build_unet(; kwargs...)

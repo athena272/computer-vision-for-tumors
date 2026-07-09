@@ -68,7 +68,7 @@ function evaluate_model(
 
     for (x, y) in dataloader
         batch_idx += 1
-        y_pred = model(x)
+        y_pred = sigmoid.(model(x))
         for i in 1:size(x, 4)
             true_i = y[:, :, :, i]
             tumor_only && sum(true_i) == 0 && continue

@@ -5,8 +5,8 @@ function predict_image(model, image_path::String; cfg::Config = Config())
     x = preprocess_image(image; target_size = cfg.image_size)
     batch = reshape(x, cfg.image_size, cfg.image_size, 1, 1)
     device = select_device(cfg)
-    y_pred = model(batch |> device) |> cpu
-    return from_flux_batch(y_pred, 1)
+    y_logits = model(batch |> device) |> cpu
+    return sigmoid.(from_flux_batch(y_logits, 1))
 end
 
 function predict_and_save(

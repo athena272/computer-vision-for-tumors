@@ -526,7 +526,7 @@ function page_train(state::InterfaceState)
     running = state.training_status == "running"
     form_block = running ? "" : """
       <form method="post" action="/train" style="margin-top:16px">
-        <label><input type="checkbox" name="quick" value="1" $quick_checked> Treino rápido (40 imagens/classe, 256×256, loss ponderada, ~1–2 h em CPU)</label>
+        <label><input type="checkbox" name="quick" value="1" $quick_checked> Treino rápido (40 imagens/classe, 256×256, loss ponderada, ~2–3 h em CPU)</label>
         <button class="btn warn" type="submit" $disabled>Iniciar treinamento</button>
       </form>
     """
@@ -540,7 +540,7 @@ function page_train(state::InterfaceState)
       <h2 style="margin-top:0;font-size:1rem">O que cada modo faz</h2>
       <ul class="muted" style="margin:0;padding-left:20px">
         <li><strong>Padrão (sem marcar):</strong> usa <em>todas</em> as imagens do BUSI em $(cfg.image_size)×$(cfg.image_size), até $(cfg.epochs) épocas — em CPU pode levar muitas horas. Para acelerar, edite <code>config/default.toml</code> (ex.: <code>image_size = 128</code>, <code>epochs = 15</code>).</li>
-        <li><strong>Rápido:</strong> 40 imagens/classe, 10 épocas, 256×256, loss ponderada para tumores — validação usa Dice só em imagens com lesão (~1–2 h em CPU).</li>
+        <li><strong>Rápido:</strong> 40 imagens/classe, 20 épocas, 256×256, loss ponderada (auto-balanceamento de pixels de tumor) — validação usa Dice só em imagens com lesão (~2–3 h em CPU).</li>
       </ul>
     </div>
     <div class="card">
@@ -699,17 +699,17 @@ function start_training!(state::InterfaceState; quick::Bool = false)
             val_ratio = state.cfg.val_ratio,
             test_ratio = state.cfg.test_ratio,
             random_seed = state.cfg.random_seed,
-            epochs = 10,
+            epochs = 20,
             batch_size = 4,
-            learning_rate = state.cfg.learning_rate,
-            early_stopping_patience = 4,
+            learning_rate = 3e-4,
+            early_stopping_patience = 6,
             use_gpu = state.cfg.use_gpu,
             max_samples_per_class = 40,
             prediction_threshold = 0.35,
             checkpoint_dir = state.cfg.checkpoint_dir,
             predictions_dir = state.cfg.predictions_dir,
             tumor_sample_weight = 4.0,
-            pos_pixel_weight = 12.0,
+            pos_pixel_weight = 20.0,
         )
     else
         state.cfg

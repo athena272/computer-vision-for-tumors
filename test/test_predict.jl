@@ -15,7 +15,7 @@ using BSON
     output_path, mask, probs = predict_and_save(model, image_path; cfg = cfg)
     @test isfile(output_path)
     @test size(mask) == (cfg.image_size, cfg.image_size)
-    @test size(probs) == (cfg.image_size, cfg.image_size)
+    @test all(0.0f0 .<= probs .<= 1.0f0)
 
     checkpoint = joinpath(cfg.checkpoint_dir, "test_model.bson")
     BSON.@save checkpoint model=model config=cfg
@@ -23,4 +23,5 @@ using BSON
     @test loaded_cfg.image_size == cfg.image_size
     pred = predict_image(loaded_model, image_path; cfg = loaded_cfg)
     @test size(pred) == (cfg.image_size, cfg.image_size)
+    @test all(0.0f0 .<= pred .<= 1.0f0)
 end

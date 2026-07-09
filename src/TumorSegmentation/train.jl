@@ -29,7 +29,7 @@ function train_model!(model, train_loader, val_loader; cfg::Config = Config(), o
     model = model |> device
 
     opt = Flux.setup(Adam(cfg.learning_rate), model)
-    best_val_dice = -Inf
+    best_val_dice = 0.0
     patience_counter = 0
     checkpoint_path = joinpath(cfg.checkpoint_dir, "best_model.bson")
     batches_per_epoch = max(1, length(train_loader))
@@ -126,6 +126,10 @@ function train_model!(model, train_loader, val_loader; cfg::Config = Config(), o
             ))
             _save_checkpoint(checkpoint_path, model, cfg)
         end
+    end
+
+    if !isfile(checkpoint_path)
+        _save_checkpoint(checkpoint_path, model, cfg)
     end
 
     if isfile(checkpoint_path)
