@@ -8,11 +8,143 @@ mutable struct InterfaceState
     cfg::Config
     training_status::String
     training_message::String
-    last_metrics::Union{Nothing,NamedTuple}
+    training_percent::Float64
+    training_epoch::Int
+    training_total_epochs::Int
+    training_batch::Int
+    training_batches_per_epoch::Int
+    training_started_at::Float64
+    training_eta::String
+    training_val_dice::Union{Nothing, Float64}
+    training_loss::Union{Nothing, Float64}
+    last_metrics::Union{Nothing, NamedTuple}
 end
 
 function InterfaceState(project_root::String)
-    InterfaceState(project_root, load_config(), "idle", "", nothing)
+    InterfaceState(
+        project_root,
+        load_config(),
+        "idle",
+        "",
+        0.0,
+        0,
+        0,
+        0,
+        0,
+        0.0,
+        "",
+        nothing,
+        nothing,
+        nothing,
+    )
+end
+
+function training_status_label(status::String)
+    status == "running" && return "Em andamento"
+    status == "done" && return "Concluído"
+    status == "error" && return "Erro"
+    return "Ocioso"
+end
+
+function training_percent(epoch::Int, total_epochs::Int, batch::Int, batches_per_epoch::Int)
+    total_epochs <= 0 && return 0.0
+    batches_per_epoch <= 0 && return 0.0
+    epoch_fraction = (epoch - 1 + batch / batches_per_epoch) / total_epochs
+    return clamp(epoch_fraction * 100, 0.0, 100.0)
+end
+
+function format_eta_pt(seconds::Real)
+    seconds = max(0, Int(round(seconds)))
+    seconds == 0 && return "quase lá"
+    if seconds < 60
+        return "~$(seconds) s restantes"
+    elseif seconds < 3600
+        minutes = seconds ÷ 60
+        return "~$(minutes) min restantes"
+    else
+        hours = seconds ÷ 3600
+        minutes = (seconds % 3600) ÷ 60
+        return "~$(hours) h $(minutes) min restantes"
+    end
+end
+
+function estimate_eta_pt(started_at::Float64, percent::Float64)
+    percent <= 0.5 && return "calculando..."
+    elapsed = time() - started_at
+    remaining = elapsed * (100 - percent) / percent
+    return format_eta_pt(remaining)
+end
+
+function reset_training_progress!(state::InterfaceState)
+    state.training_percent = 0.0
+    state.training_epoch = 0
+    state.training_total_epochs = 0
+    state.training_batch = 0
+    state.training_batches_per_epoch = 0
+    state.training_started_at = 0.0
+    state.training_eta = ""
+    state.training_val_dice = nothing
+    state.training_loss = nothing
+end
+
+function update_training_progress!(state::InterfaceState, progress)
+    if progress.phase == :prepare
+        state.training_message = "Preparando dataset e carregando imagens..."
+        state.training_percent = 0.0
+        return
+    end
+
+    if progress.phase == :batch
+        state.training_epoch = progress.epoch
+        state.training_total_epochs = progress.total_epochs
+        state.training_batch = progress.batch
+        state.training_batches_per_epoch = progress.batches_per_epoch
+        state.training_percent = training_percent(
+            progress.epoch,
+            progress.total_epochs,
+            progress.batch,
+            progress.batches_per_epoch,
+        )
+        state.training_message = "Época $(progress.epoch)/$(progress.total_epochs), lote $(progress.batch)/$(progress.batches_per_epoch)"
+        if state.training_started_at > 0
+            state.training_eta = estimate_eta_pt(state.training_started_at, state.training_percent)
+        end
+        return
+    end
+
+    if progress.phase in (:epoch, :early_stop)
+        state.training_epoch = progress.epoch
+        state.training_total_epochs = progress.total_epochs
+        state.training_batches_per_epoch = progress.batches_per_epoch
+        state.training_batch = progress.batches_per_epoch
+        state.training_loss = progress.train_loss
+        state.training_val_dice = progress.val_dice
+        state.training_percent = training_percent(
+            progress.epoch,
+            progress.total_epochs,
+            progress.batches_per_epoch,
+            progress.batches_per_epoch,
+        )
+        loss_txt = round(progress.train_loss, digits = 4)
+        if progress.val_dice !== nothing
+            dice_txt = round(progress.val_dice, digits = 4)
+            state.training_message = "Época $(progress.epoch)/$(progress.total_epochs) concluída · loss $loss_txt · Dice validação $dice_txt"
+        else
+            state.training_message = "Época $(progress.epoch)/$(progress.total_epochs) concluída · loss $loss_txt"
+        end
+        if progress.phase == :early_stop
+            state.training_message *= " · parada antecipada"
+        end
+        if state.training_started_at > 0
+            state.training_eta = estimate_eta_pt(state.training_started_at, state.training_percent)
+        end
+        return
+    end
+
+    if progress.phase == :finished
+        state.training_percent = 100.0
+        state.training_eta = ""
+    end
 end
 
 function html_escape(text::AbstractString)
@@ -48,6 +180,9 @@ function layout(title::String, body::String)
         .err { background: #7f1d1d; }
         nav a { margin-right: 12px; }
         code { background: #334155; padding: 2px 6px; border-radius: 4px; }
+        .progress-wrap { margin-top: 16px; height: 14px; border-radius: 999px; background: #0f172a; overflow: hidden; border: 1px solid #334155; }
+        .progress-bar { height: 100%; background: linear-gradient(90deg, #2563eb, #38bdf8); transition: width 0.4s ease; }
+        .progress-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; color: #cbd5e1; font-size: 0.95rem; }
       </style>
     </head>
     <body>
@@ -177,18 +312,40 @@ end
 function page_train(state::InterfaceState)
     quick_checked = state.cfg.max_samples_per_class > 0 ? "checked" : ""
     disabled = state.training_status == "running" ? "disabled" : ""
+    status_label = training_status_label(state.training_status)
+    status_class = state.training_status == "done" ? "status ok" :
+                   state.training_status == "error" ? "status err" :
+                   state.training_status == "running" ? "status" : "status"
+
+    progress_block = ""
+    if state.training_status == "running" || state.training_percent > 0
+        percent = round(state.training_percent, digits = 1)
+        eta = isempty(state.training_eta) ? "calculando..." : state.training_eta
+        progress_block = """
+        <div class="progress-wrap" aria-label="Progresso do treinamento">
+          <div class="progress-bar" style="width: $(percent)%"></div>
+        </div>
+        <div class="progress-meta">
+          <span><strong>$(percent)%</strong></span>
+          <span>$eta</span>
+        </div>
+        """
+    end
+
+    refresh_seconds = state.training_status == "running" ? 2 : 8
     body = """
     <h1>Treinar modelo</h1>
-    <p class="muted">O treino roda em segundo plano. Esta página atualiza a cada 5 segundos. Em CPU, pode levar bastante tempo.</p>
+    <p class="muted">O treino roda em segundo plano. Esta página atualiza automaticamente. Em CPU, pode levar bastante tempo.</p>
     <div class="card">
-      <div class="status">Status: $(html_escape(state.training_status))</div>
+      <div class="$status_class">Status: $(html_escape(status_label))</div>
+      $progress_block
       <p style="margin-top:12px">$(html_escape(state.training_message))</p>
       <form method="post" action="/train" style="margin-top:16px">
         <label><input type="checkbox" name="quick" value="1" $quick_checked> Treino rápido (20 imagens por classe, 5 épocas)</label>
         <button class="btn warn" type="submit" $disabled>Iniciar treinamento</button>
       </form>
     </div>
-    <meta http-equiv="refresh" content="5">
+    <meta http-equiv="refresh" content="$refresh_seconds">
     """
     layout("Treinar", body)
 end
@@ -239,7 +396,9 @@ end
 function start_training!(state::InterfaceState; quick::Bool = false)
     state.training_status == "running" && return
     state.training_status = "running"
-    state.training_message = "Treinamento em andamento..."
+    reset_training_progress!(state)
+    state.training_started_at = time()
+    state.training_message = "Iniciando treinamento..."
 
     cfg = if quick
         Config(
@@ -262,14 +421,20 @@ function start_training!(state::InterfaceState; quick::Bool = false)
     else
         state.cfg
     end
+    state.training_total_epochs = cfg.epochs
+
+    on_progress = progress -> update_training_progress!(state, progress)
 
     @async begin
         try
-            checkpoint = run_training!(cfg)
+            checkpoint = run_training!(cfg; on_progress = on_progress)
             state.training_status = "done"
+            state.training_percent = 100.0
+            state.training_eta = ""
             state.training_message = "Treinamento concluído. Modelo salvo em $(rel_path(state, checkpoint))."
         catch err
             state.training_status = "error"
+            state.training_eta = ""
             state.training_message = "Erro no treinamento: $(sprint(showerror, err))"
         end
     end

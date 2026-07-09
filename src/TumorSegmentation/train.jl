@@ -1,4 +1,5 @@
-function run_training!(cfg::Config = load_config())
+function run_training!(cfg::Config = load_config(); on_progress = nothing)
+    on_progress !== nothing && on_progress((; phase = :prepare))
     ensure_output_dirs!(cfg)
     samples = list_samples(cfg.dataset_path; max_per_class = cfg.max_samples_per_class)
     splits = split_samples(
@@ -13,11 +14,12 @@ function run_training!(cfg::Config = load_config())
         batch_size = cfg.batch_size,
     )
     model = build_unet(in_channels = 1, out_channels = 1)
-    train_model!(model, loaders.train, loaders.val; cfg = cfg)
+    train_model!(model, loaders.train, loaders.val; cfg = cfg, on_progress = on_progress)
+    on_progress !== nothing && on_progress((; phase = :finished))
     return joinpath(cfg.checkpoint_dir, "best_model.bson")
 end
 
-function train_model!(model, train_loader, val_loader; cfg::Config = Config())
+function train_model!(model, train_loader, val_loader; cfg::Config = Config(), on_progress = nothing)
     ensure_output_dirs!(cfg)
     device = select_device(cfg)
     model = model |> device
@@ -26,10 +28,15 @@ function train_model!(model, train_loader, val_loader; cfg::Config = Config())
     best_val_dice = -Inf
     patience_counter = 0
     checkpoint_path = joinpath(cfg.checkpoint_dir, "best_model.bson")
+    batches_per_epoch = max(1, length(train_loader))
+
+    notify(progress) = on_progress !== nothing && on_progress(progress)
 
     for epoch in 1:cfg.epochs
         epoch_losses = Float32[]
+        batch_idx = 0
         for (x, y) in train_loader
+            batch_idx += 1
             x = x |> device
             y = y |> device
             loss, grads = Flux.withgradient(model) do m
@@ -37,6 +44,13 @@ function train_model!(model, train_loader, val_loader; cfg::Config = Config())
             end
             Flux.update!(opt, model, grads[1])
             push!(epoch_losses, Float32(loss))
+            notify((
+                phase = :batch,
+                epoch = epoch,
+                total_epochs = cfg.epochs,
+                batch = batch_idx,
+                batches_per_epoch = batches_per_epoch,
+            ))
         end
         train_loss = isempty(epoch_losses) ? 0.0f0 : mean(epoch_losses)
 
@@ -45,6 +59,15 @@ function train_model!(model, train_loader, val_loader; cfg::Config = Config())
             metrics = evaluate_model(model, val_loader)
             val_dice = metrics.dice
             println("Época $epoch/$(cfg.epochs) | loss treino: $(round(train_loss, digits=4)) | Dice validação: $(round(val_dice, digits=4))")
+
+            notify((
+                phase = :epoch,
+                epoch = epoch,
+                total_epochs = cfg.epochs,
+                batches_per_epoch = batches_per_epoch,
+                train_loss = Float64(train_loss),
+                val_dice = Float64(val_dice),
+            ))
 
             if val_dice > best_val_dice
                 best_val_dice = val_dice
@@ -55,11 +78,27 @@ function train_model!(model, train_loader, val_loader; cfg::Config = Config())
                 patience_counter += 1
                 if patience_counter >= cfg.early_stopping_patience
                     println("Early stopping na época $epoch.")
+                    notify((
+                        phase = :early_stop,
+                        epoch = epoch,
+                        total_epochs = cfg.epochs,
+                        batches_per_epoch = batches_per_epoch,
+                        train_loss = Float64(train_loss),
+                        val_dice = Float64(val_dice),
+                    ))
                     break
                 end
             end
         else
             println("Época $epoch/$(cfg.epochs) | loss treino: $(round(train_loss, digits=4))")
+            notify((
+                phase = :epoch,
+                epoch = epoch,
+                total_epochs = cfg.epochs,
+                batches_per_epoch = batches_per_epoch,
+                train_loss = Float64(train_loss),
+                val_dice = nothing,
+            ))
             _save_checkpoint(checkpoint_path, model, cfg)
         end
     end
