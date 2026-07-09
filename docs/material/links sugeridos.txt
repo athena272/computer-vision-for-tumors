@@ -1,0 +1,18 @@
+https://youtu.be/KAazjZoiCd0?si=nQ4kATKMJk3-UNiT <- Noeocognitron
+(Origens das CNN ou "que pena do gatinho!")
+
+https://youtu.be/ip2HYPC_T9Q?si=u3HCUDIeEdD6yM2L  <- LeNet 5
+
+https://youtu.be/UZDiGooFs54?si=3BZ3be7xnBXHbyT3 <- Alexnet
+
+https://youtu.be/MD2fYip6QsQ?si=28TSHQHs5sTMV45Y  <- Otimizador Adam
+
+https://www.reddit.com/r/MachineLearning/comments/hoo6m8/d_ml_oldtimers_when_did_deep_learning_really_take/  <- Perspectivas interessantes de quem viveu a turbulenta volta do interesse geral nas redes neurais artificiais, na forma do "DeepLearning".
+Exemplos de depoimentos:
+-> "when AlexNet won ImageNet, it didn't seem like a big thing -- it was simply "yet another success for deep learning". In hindsight, that was probably only because my lab wasn't doing any computer vision. Otherwise we might've been more impressed."
+
+-> "(...) the first real deep learning successes were in speech recognition. First, in 2009 on small vocabulary problems and then in 2010 on large vocabulary, more commercially relevant datasets."
+
+
+
+
