@@ -1,0 +1,17 @@
+O arquivo 'diabetes_dados.txt' é uma matrix com 768 linhas e 9 colunas. As linhas correspondem a pacientes (indivíduos) e as colunas de 1 a 8 correspondem às variáveis seguintes:
+1. Pregnancies, 
+2. Glucose, 
+3. BloodPressure, 
+4. SkinThickness, 
+5. Insulin, 
+6. BMI, 
+7. DiabetesPedigreeFunction,
+8. Age
+
+A última coluna corresponde à classe (diabético = 1, controle = 0) 
+
+Para ler e preparar os dados para o aprendizado de máquiva, o seguinte segmenento de código em Octave pode ser usado:
+
+Tudo = load('diabetes_dados.txt');
+X = Tudo(:,1:end-1); # Separa a matriz de dados
+C = Tudo(:,end); # Separa o vetor de classes

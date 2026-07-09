@@ -1,0 +1,8 @@
+outputs/
+*.bson
+.DS_Store
+Thumbs.db
+
+# Material didático local (>100 MB — GitHub bloqueia o push)
+docs/material/MNIST_treino.csv
+docs/material/fashion-mnist_train.txt

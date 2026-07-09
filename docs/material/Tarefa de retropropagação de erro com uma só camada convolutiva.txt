@@ -1,0 +1,69 @@
+Tarefa tão simples quanto possível de retropropagação de erros por uma camada convolutiva (com pesos compartilhados)
+
+Por simplicidade, será considerado que a entrada, X, é uma matriz 3x3 fixa que deve ser convertida em uma saída desejada, D, que é uma matriz 2x2. Para isso, será usado apenas um filtro, W, 2x2, com polarização, B, e função de ativação ReLU. Abaixo é descrito apenas um passo de ajuste de W e B, bem como é computado o erro, Ey, 2x2, que é retropropagado da saída até a entrada, na forma de Ex, que é 3x3.
+
+X = [2    -1    0; % Matriz de entrada  
+     1     0    0.5;
+    -0.3  0.2   0];
+
+Computacionalmente, uma matriz como X também é codificada como um vetor, com posições de 1, 2, 3, 4... 9, correspondentes às entradas 2, 1, -0.3, -1, ... 0. Por exemplo, experimente no Octave "ver" a entrada X(6). Qual o valor dessa entrada?  
+
+Agora assuma uma inicialização arbitrária de pesos e polarizações assim:
+W = [0.1   -0.2; % Apenas um filtro 2x2
+        0.5    0.4];
+W também pode ser representado como um vetor:
+W = W(:) = [0.1
+            0.5
+           -0.2
+            0.4];
+
+B = 0.5; % Polarização do filtro
+
+Assuma também que a saída desejada para a camada convolutiva é:
+O = [1   0;
+     2   1];
+que também pode ser representado na forma "flat," ou de vetor, assim:
+O = O(:) = [1
+            2
+            0
+            1];
+
+Essa saída desejada, arbitrária, geralmente não é disponível, a não ser para a última camada, mas para que o exemplo fique mais fácil de entender, vamos considerar que sabemos o que gostaríamos de obter na saída, que não precisa ser "one-hot".
+
+Agora considere a seguinte matriz de apontadores:
+pX =[1   2   4   5; % posição 1 da convolução
+     2   3   5   6; % posição 2 da convolução
+     4   5   7   8; % posição 3 da convolução
+     5   6   8   9]; % posição 4 da convolução
+Observe que cada linha da matriz pX corresponde a um retalho (um "patch") 2x2 de X, e que X(pX) é uma matriz 4x4 onde cada linha corresponde aos pixels de um patch.  
+
+Dessa forma, a multiplicação matricial X(pX)*W equivale à convolução de X com W.  (<- Importante!)
+e a saída da camada convolutiva, incluindo polarização (bias) e função de ativação fica assim:
+
+Z = X(pX)*W + B*ones(4,1);
+Y = max(0,Z); % Repare que max(0,x) implementa a ReLU(x)
+
+Logo Y é a saída da "convolução" na forma vetorial, e reshape(Y,2,2); pode converter essa saída vetor em matriz 2x2. No entanto, para a retropropagação do erro, isso não será necessário, pois o erro pode ser computado vetorialmente, assim:
+
+Ey = (O-Y);
+
+e retropropagado pelos neurônios:
+
+Ey = Ey.*(Z>=0); % Pedágio da função de ativação  ReLU. Nota:  Z>=0 implementa u(Z)
+
+e para um passo de aprendizado de, por exemplo, alfa = 0.1; podemos acumular os erros retro-propagados em cada um dos 4 "patches,"
+
+Ex = zeros(3,3); % Acumulador de fluxos de erro
+for posicao = 1:4  % 4 posições da máscara de convolução
+ aux = Ey(posicao)*W'; % Refluxo de erro a partir de uma posição de saída
+  Ex(pX(posicao,:)) = Ex(pX(posicao,:)) + aux; % Acumula erros para o caso desse erro ter que ser retropropagação ainda para camadas anteriores
+end
+
+Finalmente, podemos também acumular os gradientes negativos e ajustar W e B:
+
+ B = B + alfa*ones(1,4)*Ey;
+ W = W + alfa*X(pX)'*Ey;  % <- Vale notar que, de acordo com a observação marcada como importante, acima, isso aqui também é uma convolução, só que entre X e Ey. 
+
+Repita esse último laço pelo menos uma vez manualmente, e certifique-se de que você entende cada etapa de retropropagação e ajustes pelo gradiente negativo. Anote suas dúvidas e leve-as para a próxima aula. 
+Depois, repita essas duas últimas linhas de ajuste de B e W pelo menos 100 vezes, usando o Octave, recalculando, a cada passo
+Y = max(0,X(pX)*W + B*ones(4,1));  e  Ey = (O-Y). Ao final, verifique se a saída Y convergiu para o desejado, O.

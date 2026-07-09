@@ -1,0 +1,28 @@
+# Caminho do dataset BUSI (relativo à raiz do repositório)
+dataset_path = "docs/material/Dataset_BUSI_with_GT"
+
+# Pré-processamento
+image_size = 256
+
+# Divisão dos dados (treino / validação / teste)
+train_ratio = 0.70
+val_ratio = 0.15
+test_ratio = 0.15
+random_seed = 42
+
+# Treinamento
+epochs = 30
+batch_size = 4
+learning_rate = 0.001
+early_stopping_patience = 5
+use_gpu = false
+
+# Limite opcional de amostras por classe (0 = usar todas)
+max_samples_per_class = 0
+
+# Inferência
+prediction_threshold = 0.5
+
+# Diretórios de saída
+checkpoint_dir = "outputs/checkpoints"
+predictions_dir = "outputs/predictions"

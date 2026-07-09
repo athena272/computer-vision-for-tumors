@@ -1,0 +1,92 @@
+function run_training!(cfg::Config = load_config())
+    ensure_output_dirs!(cfg)
+    samples = list_samples(cfg.dataset_path; max_per_class = cfg.max_samples_per_class)
+    splits = split_samples(
+        samples;
+        train_ratio = cfg.train_ratio,
+        val_ratio = cfg.val_ratio,
+        seed = cfg.random_seed,
+    )
+    loaders = create_dataloaders(
+        splits;
+        image_size = cfg.image_size,
+        batch_size = cfg.batch_size,
+    )
+    model = build_unet(in_channels = 1, out_channels = 1)
+    train_model!(model, loaders.train, loaders.val; cfg = cfg)
+    return joinpath(cfg.checkpoint_dir, "best_model.bson")
+end
+
+function train_model!(model, train_loader, val_loader; cfg::Config = Config())
+    ensure_output_dirs!(cfg)
+    device = select_device(cfg)
+    model = model |> device
+
+    opt = Flux.setup(Adam(cfg.learning_rate), model)
+    best_val_dice = -Inf
+    patience_counter = 0
+    checkpoint_path = joinpath(cfg.checkpoint_dir, "best_model.bson")
+
+    for epoch in 1:cfg.epochs
+        epoch_losses = Float32[]
+        for (x, y) in train_loader
+            x = x |> device
+            y = y |> device
+            loss, grads = Flux.withgradient(model) do m
+                combined_loss(m(x), y)
+            end
+            Flux.update!(opt, model, grads[1])
+            push!(epoch_losses, Float32(loss))
+        end
+        train_loss = isempty(epoch_losses) ? 0.0f0 : mean(epoch_losses)
+
+        val_dice = 0.0
+        if val_loader !== nothing
+            metrics = evaluate_model(model, val_loader)
+            val_dice = metrics.dice
+            println("Época $epoch/$(cfg.epochs) | loss treino: $(round(train_loss, digits=4)) | Dice validação: $(round(val_dice, digits=4))")
+
+            if val_dice > best_val_dice
+                best_val_dice = val_dice
+                patience_counter = 0
+                _save_checkpoint(checkpoint_path, model, cfg)
+                println("  -> Novo melhor modelo salvo (Dice = $(round(val_dice, digits=4)))")
+            else
+                patience_counter += 1
+                if patience_counter >= cfg.early_stopping_patience
+                    println("Early stopping na época $epoch.")
+                    break
+                end
+            end
+        else
+            println("Época $epoch/$(cfg.epochs) | loss treino: $(round(train_loss, digits=4))")
+            _save_checkpoint(checkpoint_path, model, cfg)
+        end
+    end
+
+    if isfile(checkpoint_path)
+        model = load_model(checkpoint_path) |> device
+    end
+
+    return model
+end
+
+function _save_checkpoint(path::String, model, cfg::Config)
+    mkpath(dirname(path))
+    cpu_model = cpu(model)
+    BSON.@save path model=cpu_model config=cfg
+end
+
+function load_model(path::String)
+    model, _ = load_model_with_config(path)
+    return model
+end
+
+function load_model_with_config(path::String)
+    isfile(path) || error("Checkpoint não encontrado: $path")
+    BSON.@load path model config
+    if !@isdefined(config) || config === nothing
+        config = Config()
+    end
+    return model, config
+end

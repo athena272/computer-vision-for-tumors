@@ -1,0 +1,57 @@
+# Pacotes básicos necessários:
+using Images # Para importar imagens
+using PyPlot # Para ver imagens
+
+# Exemplo de leitura e visualização de uma imagem, 
+# com sua respectiva anotação:
+X0 = Float64.(red.(load("malignant (1).png")));
+C0 = Float64.(load("malignant (1)_mask.png"));
+
+# Apresentação visual das imagens:
+subplot(1,2,1);
+imshow(X0,cmap="gray");
+title("Imagem analisada (entrada)") 
+subplot(1,2,2);
+imshow(C0,cmap="gray")
+title("Segmentação manual dos pixels (saída desejada)") 
+show()
+
+
+# Definição de caminhos das pastas com imagens
+caminhoB = "<caminho>/Dataset_BUSI_with_GT/benign/"
+caminhoM = "<caminho>/Dataset_BUSI_with_GT/malignant/"
+caminhoN = "<caminho>/Dataset_BUSI_with_GT/normal/"
+
+# Exemplo de leitura do conteúdo de uma das pastas:
+# (aqui se supõe que, na pasta, há apenas as imagens 
+# e suas respectivas anotações, como disponibilizada 
+# no material compartilhado 
+
+# Considerando a pasta no caminho caminhoM, com imagens de tumores malignos, podemos primeiro ler a lista de seu conteúdo:
+
+arqM = readdir(caminhoM);
+
+# Depois, para codificar as imagens como vetores, de tamanhos potencialmente diferentes, podemos usar uma variável definida como "Array de Arrays do tipo Float de 64v bits, assim:
+ 
+X0 = Array{Array{Float64}}(undef,length(arqM));
+C0 = Array{Array{Float64}}(undef,length(arqM));
+
+# E os tamanhos das imagens podem ser codificados em vetores de inteiros:
+M0 = zeros(Int, length(arqM));
+N0 = zeros(Int, length(arqM));
+K0 = zeros(Int, length(arqM));
+
+# Depois, basta converter cada imagem em um vetor de Floats e atribuí-las, uma a uma, aos vetores indexados por X0 e C0:
+for k in 1:length(arqM)
+if arqM[k][end-8:end] == "_mask.png"
+   # Leitura de imagens:
+   C0[k] = Float64.(load(caminhoM*arqM[k]))[:];
+   aux = Float64.(red.(load(caminhoM*arqM[2][1:end-9]*".png")));
+   M0[k],N0[k] = size(aux);
+   K0[k] = 1;
+   X0[k] = aux[:];
+end
+end
+
+    
+
