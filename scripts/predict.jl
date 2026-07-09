@@ -40,7 +40,13 @@ function main()
     gt_path = replace(image_path, r"\.png$" => "_mask.png")
     if isfile(gt_path)
         comparison_path = replace(saved_path, "_pred.png" => "_comparison.png")
-        save_comparison(image_path, predict_image(model, image_path; cfg = cfg), comparison_path; ground_truth_path = gt_path)
+        save_comparison(
+            image_path,
+            predict_image(model, image_path; cfg = cfg),
+            comparison_path;
+            ground_truth_path = gt_path,
+            target_size = cfg.image_size,
+        )
         println("Comparação visual salva em: $comparison_path")
     end
 end

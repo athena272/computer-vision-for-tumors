@@ -109,3 +109,21 @@ function (model::UNet)(x)
 end
 
 UNet(; kwargs...) = build_unet(; kwargs...)
+
+"""Canais menores para imagens pequenas — treina bem mais rápido em CPU."""
+function unet_features_for_size(image_size::Int)
+    if image_size <= 64
+        return [32, 64, 128, 256]
+    elseif image_size <= 128
+        return [48, 96, 192, 384]
+    end
+    return [64, 128, 256, 512]
+end
+
+function build_unet_for_config(cfg::Config)
+    return build_unet(
+        in_channels = 1,
+        out_channels = 1,
+        features = unet_features_for_size(cfg.image_size),
+    )
+end

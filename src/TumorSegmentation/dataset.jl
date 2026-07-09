@@ -95,9 +95,41 @@ function load_sample(sample::Sample; image_size::Int = 256)
     return x, y
 end
 
-function _collate_batch(batch::Vector{Tuple{Matrix{Float32}, Matrix{Float32}}})
+const EAGER_LOAD_MAX_TRAIN_SAMPLES = 100
+
+function _collate_preloaded(batch::Vector{Tuple{Matrix{Float32}, Matrix{Float32}}})
     images = [item[1] for item in batch]
     masks = [item[2] for item in batch]
+    return to_flux_batch(images), to_flux_batch(masks)
+end
+
+function _preload_samples(
+    samples::Vector{Sample},
+    image_size::Int;
+    on_progress = nothing,
+    label::String = "treino",
+)
+    notify(progress) = on_progress !== nothing && on_progress(progress)
+    data = Tuple{Matrix{Float32}, Matrix{Float32}}[]
+    n = length(samples)
+    for (i, sample) in enumerate(samples)
+        push!(data, load_sample(sample; image_size = image_size))
+        if i % 5 == 0 || i == n
+            notify((; phase = :prepare, percent = 8.0, message = "Cache em RAM ($label: $i/$n)..."))
+        end
+        yield()
+    end
+    return data
+end
+
+function _lazy_collate(batch::Vector{Sample}, image_size::Int)
+    images = Matrix{Float32}[]
+    masks = Matrix{Float32}[]
+    for sample in batch
+        x, y = load_sample(sample; image_size = image_size)
+        push!(images, x)
+        push!(masks, y)
+    end
     return to_flux_batch(images), to_flux_batch(masks)
 end
 
@@ -106,27 +138,43 @@ function create_dataloaders(
     image_size::Int = 256,
     batch_size::Int = 4,
     shuffle_train::Bool = true,
+    on_progress = nothing,
 )
-    function make_loader(samples::Vector{Sample})
-        data = [load_sample(s; image_size = image_size) for s in samples]
+    notify(progress) = on_progress !== nothing && on_progress(progress)
+
+    total = length(splits.train) + length(splits.val) + length(splits.test)
+    use_eager = length(splits.train) <= EAGER_LOAD_MAX_TRAIN_SAMPLES
+    if use_eager
+        notify((; phase = :prepare, percent = 8.0, message = "Pré-carregando $total imagens em RAM (treino rápido)..."))
+    else
+        notify((; phase = :prepare, percent = 8.0, message = "Preparando $total imagens (carrega por lote, economiza RAM)..."))
+    end
+
+    function make_loader(samples::Vector{Sample}, shuffle::Bool; label::String = "treino")
+        isempty(samples) && return nothing
+        if use_eager
+            data = _preload_samples(samples, image_size; on_progress = on_progress, label = label)
+            return Flux.DataLoader(
+                data;
+                batchsize = batch_size,
+                shuffle = shuffle,
+                collate = _collate_preloaded,
+            )
+        end
         return Flux.DataLoader(
-            data;
+            samples;
             batchsize = batch_size,
-            shuffle = false,
-            collate = _collate_batch,
+            shuffle = shuffle,
+            collate = batch -> begin
+                yield()
+                _lazy_collate(batch, image_size)
+            end,
         )
     end
 
-    train_data = [load_sample(s; image_size = image_size) for s in splits.train]
-    train_loader = Flux.DataLoader(
-        train_data;
-        batchsize = batch_size,
-        shuffle = shuffle_train,
-        collate = _collate_batch,
-    )
-
-    val_loader = isempty(splits.val) ? nothing : make_loader(splits.val)
-    test_loader = isempty(splits.test) ? nothing : make_loader(splits.test)
+    train_loader = make_loader(splits.train, shuffle_train; label = "treino")
+    val_loader = make_loader(splits.val, false; label = "validação")
+    test_loader = make_loader(splits.test, false; label = "teste")
 
     return (train = train_loader, val = val_loader, test = test_loader)
 end

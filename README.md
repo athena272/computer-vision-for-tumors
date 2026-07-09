@@ -76,7 +76,7 @@ Se você prefere **não decorar comandos**, use a interface no navegador:
    @echo off
    cd /d "%~dp0"
    echo Abrindo interface web do projeto U-Net...
-   julia --project scripts/interface.jl
+   julia --project -t auto scripts/interface.jl
    pause
    ```
 
@@ -85,8 +85,10 @@ Se você prefere **não decorar comandos**, use a interface no navegador:
 ### Opção B — um comando no terminal
 
 ```bash
-julia --project scripts/interface.jl
+julia --project -t auto scripts/interface.jl
 ```
+
+O flag `-t auto` usa várias threads do CPU para o treino rodar em segundo plano sem travar a barra de progresso na página.
 
 Na interface você pode:
 

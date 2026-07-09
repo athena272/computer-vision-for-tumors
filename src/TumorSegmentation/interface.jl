@@ -17,6 +17,14 @@ mutable struct InterfaceState
     training_eta::String
     training_val_dice::Union{Nothing, Float64}
     training_loss::Union{Nothing, Float64}
+    predict_status::String
+    predict_message::String
+    predict_percent::Float64
+    last_predict_result::Union{Nothing, NamedTuple}
+    evaluation_status::String
+    evaluation_message::String
+    evaluation_percent::Float64
+    training_checkpoint_rel::String
     last_metrics::Union{Nothing, NamedTuple}
 end
 
@@ -35,16 +43,26 @@ function InterfaceState(project_root::String)
         "",
         nothing,
         nothing,
+        "idle",
+        "",
+        0.0,
+        nothing,
+        "idle",
+        "",
+        0.0,
+        "",
         nothing,
     )
 end
 
-function training_status_label(status::String)
+function job_status_label(status::String)
     status == "running" && return "Em andamento"
     status == "done" && return "Concluído"
     status == "error" && return "Erro"
     return "Ocioso"
 end
+
+const training_status_label = job_status_label
 
 function training_percent(epoch::Int, total_epochs::Int, batch::Int, batches_per_epoch::Int)
     total_epochs <= 0 && return 0.0
@@ -89,8 +107,8 @@ end
 
 function update_training_progress!(state::InterfaceState, progress)
     if progress.phase == :prepare
-        state.training_message = "Preparando dataset e carregando imagens..."
-        state.training_percent = 0.0
+        state.training_message = get(progress, :message, "Preparando dataset e carregando imagens...")
+        state.training_percent = get(progress, :percent, 2.0)
         return
     end
 
@@ -147,6 +165,150 @@ function update_training_progress!(state::InterfaceState, progress)
     end
 end
 
+function job_display_message(status::String, message::String)
+    if !isempty(message)
+        return message
+    end
+    return status == "idle" ? "Aguardando ação." :
+           status == "running" ? "Processando..." :
+           status == "done" ? "Concluído." : ""
+end
+
+function run_background!(f)
+    if Threads.nthreads() > 1
+        Threads.@spawn f()
+    else
+        @async f()
+    end
+    return nothing
+end
+
+function log_background_error!(task_name::String, err)
+    println(stderr, "\n[$task_name] Erro:")
+    showerror(stderr, err, catch_backtrace())
+    println(stderr)
+end
+
+function format_task_error(err)
+    if err isa Base.OutOfMemoryError
+        return "Memória insuficiente. Tente o treino rápido ou reduza image_size em config/default.toml."
+    end
+    return sprint(showerror, err)
+end
+
+function progress_block_html(percent::Real; eta::String = "", panel_id::String = "")
+    pct = round(clamp(percent, 0, 100), digits = 1)
+    display_pct = pct <= 0 ? 0.0 : pct
+    bar_id = isempty(panel_id) ? "" : " id=\"$(panel_id)-bar\""
+    pct_id = isempty(panel_id) ? "" : " id=\"$(panel_id)-pct\""
+    eta_id = isempty(panel_id) ? "" : " id=\"$(panel_id)-eta\""
+    eta_block = isempty(eta) ? "" : "<span$(eta_id)>$eta</span>"
+    return """
+    <div class="progress-wrap" aria-label="Progresso">
+      <div class="progress-bar"$bar_id style="width: $(display_pct)%"></div>
+    </div>
+    <div class="progress-meta">
+      <span><strong$pct_id>$(pct)%</strong></span>
+      $eta_block
+    </div>
+    """
+end
+
+function job_progress_html(status::String, percent::Real, message::String; eta::String = "", panel_id::String = "")
+    status_label = job_status_label(status)
+    status_class = status == "error" ? "status err" :
+                   status == "done" ? "status ok" : "status"
+    display_message = job_display_message(status, message)
+    wrapper_open = isempty(panel_id) ?
+        "<div class=\"job-progress\">" :
+        "<div class=\"job-progress\" id=\"$panel_id\">"
+    status_id = isempty(panel_id) ? "" : " id=\"$(panel_id)-status\""
+    msg_id = isempty(panel_id) ? "" : " id=\"$(panel_id)-message\""
+    return """
+    $wrapper_open
+    <div$status_id class="$status_class">Status: $(html_escape(status_label))</div>
+    $(progress_block_html(percent; eta = eta, panel_id = panel_id))
+    <p$msg_id style="margin-top:12px">$(html_escape(display_message))</p>
+    </div>
+    """
+end
+
+function auto_refresh_tag(seconds::Int)
+    seconds > 0 ? "<meta http-equiv=\"refresh\" content=\"$seconds\">" : ""
+end
+
+function html_response(body::String)
+    return HTTP.Response(200, [
+        "Content-Type" => "text/html; charset=utf-8",
+        "Connection" => "close",
+        "Cache-Control" => "no-store",
+    ], body)
+end
+
+function redirect_response(location::String)
+    return HTTP.Response(302, ["Location" => location, "Connection" => "close"], "")
+end
+
+function file_img_tag(rel_path::String; alt::String = "Imagem")
+    src = "/file?path=$(URIs.escapeuri(rel_path))"
+    return """<img src="$src" alt="$(html_escape(alt))">"""
+end
+
+function predict_result_html(result)
+    image_rel = result.image_rel
+    pred_rel = result.pred_rel
+    comparison_rel = get(result, :comparison_rel, nothing)
+    gt_rel = get(result, :gt_rel, nothing)
+
+    comparison_hero = ""
+    if comparison_rel !== nothing
+        comparison_hero = """
+        <div class="card result-hero">
+          <h2>Comparação visual</h2>
+          <p class="muted">Ultrassom, máscara prevista e máscara real (quando existir)</p>
+          $(file_img_tag(comparison_rel; alt = "Comparação"))
+        </div>
+        """
+    end
+
+    gt_panel = ""
+    if gt_rel !== nothing
+        gt_panel = """
+        <div>
+          <h3>Máscara real</h3>
+          $(file_img_tag(gt_rel; alt = "Máscara real"))
+        </div>
+        """
+    end
+
+    return """
+    <h2 class="section-title">Resultado na tela</h2>
+    $comparison_hero
+    <div class="card images">
+      <div>
+        <h3>Entrada</h3>
+        $(file_img_tag(image_rel; alt = "Entrada"))
+      </div>
+      <div>
+        <h3>Máscara prevista</h3>
+        $(file_img_tag(pred_rel; alt = "Predição"))
+      </div>
+      $gt_panel
+    </div>
+    """
+end
+
+function metrics_result_html(m)
+    acc_pct = round(100 * m.accuracy, digits = 1)
+    return """
+    <div class="metrics-grid">
+      <div class="metric-box"><span>Dice</span><strong>$(round(m.dice, digits = 4))</strong></div>
+      <div class="metric-box"><span>IoU</span><strong>$(round(m.iou, digits = 4))</strong></div>
+      <div class="metric-box"><span>Acurácia</span><strong>$(acc_pct)%</strong></div>
+    </div>
+    """
+end
+
 function html_escape(text::AbstractString)
     replace(string(text), "&" => "&amp;", "<" => "&lt;", ">" => "&gt;", "\"" => "&quot;")
 end
@@ -171,7 +333,8 @@ function layout(title::String, body::String)
         .btn.secondary { background: #475569; }
         .btn.warn { background: #b45309; }
         label { display: block; margin: 12px 0 6px; font-weight: 600; }
-        select, input[type=text] { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; }
+        select, input[type=text], input[type=file] { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; box-sizing: border-box; }
+        input[type=file]::file-selector-button { margin-right: 12px; border: 0; border-radius: 6px; padding: 8px 12px; background: #334155; color: #e2e8f0; cursor: pointer; }
         .images { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
         .images img { width: 100%; border-radius: 8px; background: #000; }
         .muted { color: #94a3b8; }
@@ -180,9 +343,15 @@ function layout(title::String, body::String)
         .err { background: #7f1d1d; }
         nav a { margin-right: 12px; }
         code { background: #334155; padding: 2px 6px; border-radius: 4px; }
-        .progress-wrap { margin-top: 16px; height: 14px; border-radius: 999px; background: #0f172a; overflow: hidden; border: 1px solid #334155; }
+        .progress-wrap { margin-top: 16px; height: 16px; border-radius: 999px; background: #334155; overflow: hidden; border: 1px solid #475569; }
         .progress-bar { height: 100%; background: linear-gradient(90deg, #2563eb, #38bdf8); transition: width 0.4s ease; }
         .progress-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; color: #cbd5e1; font-size: 0.95rem; }
+        .result-hero { margin: 16px 0; }
+        .result-hero img { width: 100%; border-radius: 12px; background: #000; border: 1px solid #334155; }
+        .metrics-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin-top: 12px; }
+        .metric-box { background: #0f172a; border-radius: 10px; padding: 14px; text-align: center; border: 1px solid #334155; }
+        .metric-box strong { display: block; font-size: 1.4rem; color: #f8fafc; margin-top: 4px; }
+        .section-title { margin: 24px 0 8px; font-size: 1.1rem; color: #e2e8f0; }
       </style>
     </head>
     <body>
@@ -215,9 +384,33 @@ function parse_form_body(body)
     return URIs.queryparams(String(body))
 end
 
+function save_uploaded_image!(state::InterfaceState, req)
+    content_type = HTTP.header(req, "Content-Type", "")
+    occursin("multipart/form-data", content_type) ||
+        error("Use o botão de escolher arquivo para enviar uma imagem PNG.")
+
+    parts = HTTP.parse_multipart_form(req)
+    (parts === nothing || isempty(parts)) && error("Nenhuma imagem foi enviada.")
+
+    for part in parts
+        part.name == "image" || continue
+        filename = something(part.filename, "upload.png")
+        endswith(lowercase(filename), ".png") || error("Envie um arquivo PNG de ultrassom.")
+
+        upload_dir = project_relative(state, joinpath(state.cfg.predictions_dir, "uploads"))
+        mkpath(upload_dir)
+        safe_name = replace(basename(filename), r"[^\w\.\- ()]" => "_")
+        dest = joinpath(upload_dir, safe_name)
+        write(dest, read(part))
+        return rel_path(state, dest)
+    end
+
+    error("Campo de imagem não encontrado no formulário.")
+end
+
 function list_example_images(state::InterfaceState)
     samples = list_samples(state.cfg.dataset_path; max_per_class = 8)
-    return [s.image_path for s in samples]
+    return [rel_path(state, s.image_path) for s in samples]
 end
 
 function model_ready(state::InterfaceState)
@@ -228,9 +421,22 @@ function page_home(state::InterfaceState)
     ready = model_ready(state)
     status = ready ? "Modelo treinado encontrado." : "Ainda não há modelo treinado."
     status_class = ready ? "status ok" : "status"
+
+    last_result_block = ""
+    if state.last_predict_result !== nothing
+        r = state.last_predict_result
+        last_result_block = """
+        <div class="card">
+          <h2>Última predição</h2>
+          $(predict_result_html(r))
+          <a class="btn secondary" href="/predict" style="margin-top:12px">Gerar outra máscara</a>
+        </div>
+        """
+    end
+
     body = """
     <h1>Segmentação de Tumores (U-Net)</h1>
-    <p class="muted">Interface local para treinar, gerar máscaras e avaliar o modelo sem decorar comandos no terminal.</p>
+    <p class="muted">Treine, gere máscaras e avalie o modelo — tudo no navegador, sem abrir pastas no computador.</p>
     <div class="$status_class">$status</div>
     <div class="grid">
       <div class="card">
@@ -240,157 +446,241 @@ function page_home(state::InterfaceState)
       </div>
       <div class="card">
         <h2>2. Gerar máscara</h2>
-        <p class="muted">Escolhe uma imagem e vê a predição da U-Net.</p>
+        <p class="muted">Escolhe uma imagem e vê o resultado aqui mesmo.</p>
         <a class="btn" href="/predict">Abrir predição</a>
       </div>
       <div class="card">
         <h2>3. Avaliar</h2>
-        <p class="muted">Calcula Dice, IoU e acurácia no conjunto de teste.</p>
+        <p class="muted">Métricas Dice, IoU e acurácia no conjunto de teste.</p>
         <a class="btn secondary" href="/evaluate">Abrir avaliação</a>
       </div>
     </div>
+    $last_result_block
     """
     layout("U-Net BUSI", body)
 end
 
-function page_predict_form(state::InterfaceState, message::String = "")
-    options = String[]
-    for path in list_example_images(state)
-        rel = rel_path(state, path)
-        push!(options, "<option value=\"$(html_escape(rel))\">$(html_escape(rel))</option>")
-    end
+function page_predict(state::InterfaceState, message::String = "")
     alert = isempty(message) ? "" : "<div class=\"status err\">$(html_escape(message))</div>"
-    body = """
-    <h1>Gerar máscara</h1>
-    $alert
+    running = state.predict_status == "running"
+    disabled = running ? "disabled" : ""
+    predict_status = running ? "running" : state.predict_status
+
+    progress_block = """
     <div class="card">
-      <form method="post" action="/predict">
-        <label for="image">Imagem de ultrassom</label>
-        <select id="image" name="image" required>
-          $(join(options, "\n"))
-        </select>
-        <p class="muted" style="margin-top:16px">A saída será salva em <code>outputs/predictions/</code>.</p>
-        <button class="btn" type="submit" style="margin-top:12px">Gerar máscara</button>
-      </form>
+      $(job_progress_html(predict_status, state.predict_percent, state.predict_message; panel_id = "progress-predict"))
     </div>
     """
-    layout("Gerar máscara", body)
-end
 
-function page_predict_result(state::InterfaceState, image_rel::String, pred_rel::String, comparison_rel::Union{Nothing,String})
-    img = "/file?path=$(URIs.escapeuri(image_rel))"
-    pred = "/file?path=$(URIs.escapeuri(pred_rel))"
-    comparison_block = ""
-    if comparison_rel !== nothing
-        cmp = "/file?path=$(URIs.escapeuri(comparison_rel))"
-        comparison_block = """
-        <div>
-          <h3>Comparação</h3>
-          <img src="$cmp" alt="Comparação">
+    result_block = ""
+    if !running && state.last_predict_result !== nothing
+        result_block = """
+        <div class="card">
+          $(predict_result_html(state.last_predict_result))
         </div>
         """
     end
-    body = """
-    <h1>Resultado</h1>
-    <p class="muted">Imagem analisada: <code>$(html_escape(image_rel))</code></p>
-    <div class="card images">
-      <div>
-        <h3>Entrada</h3>
-        <img src="$img" alt="Entrada">
-      </div>
-      <div>
-        <h3>Máscara prevista</h3>
-        <img src="$pred" alt="Predição">
-      </div>
-      $comparison_block
+
+    form_block = running ? "" : """
+    <div class="card">
+      <form method="post" action="/predict" enctype="multipart/form-data">
+        <label for="image">Imagem de ultrassom (PNG)</label>
+        <input id="image" type="file" name="image" accept="image/png,.png" required>
+        <p class="muted" style="margin-top:16px">Escolha um arquivo do seu computador. O resultado aparece abaixo nesta página.</p>
+        <button class="btn" type="submit" style="margin-top:12px" data-disable-while-running $disabled>Gerar máscara</button>
+      </form>
     </div>
-    <a class="btn secondary" href="/predict">Gerar outra</a>
     """
-    layout("Resultado", body)
+
+    refresh_tag = auto_refresh_tag(running ? 2 : 0)
+
+    body = """
+    <h1>Gerar máscara</h1>
+    <p class="muted">Escolha uma imagem PNG do seu computador. A barra de progresso atualiza automaticamente durante o processamento.</p>
+    $alert
+    $progress_block
+    $form_block
+    $result_block
+    $refresh_tag
+    """
+    layout("Gerar máscara", body)
 end
 
 function page_train(state::InterfaceState)
     quick_checked = state.cfg.max_samples_per_class > 0 ? "checked" : ""
     disabled = state.training_status == "running" ? "disabled" : ""
-    status_label = training_status_label(state.training_status)
-    status_class = state.training_status == "done" ? "status ok" :
-                   state.training_status == "error" ? "status err" :
-                   state.training_status == "running" ? "status" : "status"
+    eta = isempty(state.training_eta) && state.training_status == "running" ? "calculando..." : state.training_eta
+    cfg = state.cfg
 
-    progress_block = ""
-    if state.training_status == "running" || state.training_percent > 0
-        percent = round(state.training_percent, digits = 1)
-        eta = isempty(state.training_eta) ? "calculando..." : state.training_eta
-        progress_block = """
-        <div class="progress-wrap" aria-label="Progresso do treinamento">
-          <div class="progress-bar" style="width: $(percent)%"></div>
-        </div>
-        <div class="progress-meta">
-          <span><strong>$(percent)%</strong></span>
-          <span>$eta</span>
+    success_block = ""
+    if state.training_status == "done"
+        success_block = """
+        <div class="card status ok" style="margin-top:16px">
+          <h2>Modelo pronto</h2>
+          <p>O treinamento terminou. Você já pode gerar máscaras na interface.</p>
+          <a class="btn" href="/predict" style="margin-top:12px">Gerar máscara agora</a>
         </div>
         """
     end
 
-    refresh_seconds = state.training_status == "running" ? 2 : 8
-    body = """
-    <h1>Treinar modelo</h1>
-    <p class="muted">O treino roda em segundo plano. Esta página atualiza automaticamente. Em CPU, pode levar bastante tempo.</p>
-    <div class="card">
-      <div class="$status_class">Status: $(html_escape(status_label))</div>
-      $progress_block
-      <p style="margin-top:12px">$(html_escape(state.training_message))</p>
+    running = state.training_status == "running"
+    form_block = running ? "" : """
       <form method="post" action="/train" style="margin-top:16px">
-        <label><input type="checkbox" name="quick" value="1" $quick_checked> Treino rápido (20 imagens por classe, 5 épocas)</label>
+        <label><input type="checkbox" name="quick" value="1" $quick_checked> Treino rápido (20 imagens/classe, 64×64, ~5–15 min em CPU)</label>
         <button class="btn warn" type="submit" $disabled>Iniciar treinamento</button>
       </form>
+    """
+    running_note = running ? """<p class="muted" style="margin-top:12px">Atualizando a cada 2 segundos...</p>""" : ""
+    refresh_tag = auto_refresh_tag(running ? 2 : 0)
+
+    body = """
+    <h1>Treinar modelo</h1>
+    <p class="muted">O treino roda em segundo plano com barra de progresso e tempo estimado. Em CPU, pode levar bastante tempo.</p>
+    <div class="card" style="margin-bottom:12px">
+      <h2 style="margin-top:0;font-size:1rem">O que cada modo faz</h2>
+      <ul class="muted" style="margin:0;padding-left:20px">
+        <li><strong>Padrão (sem marcar):</strong> usa <em>todas</em> as imagens do BUSI em $(cfg.image_size)×$(cfg.image_size), até $(cfg.epochs) épocas — em CPU pode levar muitas horas. Para acelerar, edite <code>config/default.toml</code> (ex.: <code>image_size = 128</code>, <code>epochs = 15</code>).</li>
+        <li><strong>Rápido:</strong> 20 imagens/classe, 5 épocas, resolução <strong>64×64</strong> e rede menor — costuma terminar em <strong>poucos minutos</strong> em CPU.</li>
+      </ul>
     </div>
-    <meta http-equiv="refresh" content="$refresh_seconds">
+    <div class="card">
+      $(job_progress_html(state.training_status, state.training_percent, state.training_message; eta = eta, panel_id = "progress-train"))
+      $running_note
+      $form_block
+    </div>
+    $success_block
+    $refresh_tag
     """
     layout("Treinar", body)
 end
 
 function page_evaluate(state::InterfaceState, error_msg::String = "")
     alert = isempty(error_msg) ? "" : "<div class=\"status err\">$(html_escape(error_msg))</div>"
+
     metrics_block = ""
-    if state.last_metrics !== nothing
-        m = state.last_metrics
+    if state.last_metrics !== nothing && state.evaluation_status != "running"
         metrics_block = """
         <div class="card status ok">
-          <h2>Últimos resultados (teste)</h2>
-          <p>Dice: $(round(m.dice, digits=4))</p>
-          <p>IoU: $(round(m.iou, digits=4))</p>
-          <p>Acurácia: $(round(m.accuracy, digits=4))</p>
+          <h2>Resultado no conjunto de teste</h2>
+          $(metrics_result_html(state.last_metrics))
         </div>
         """
     end
+
+    progress_block = """
+    <div class="card">
+      $(job_progress_html(state.evaluation_status, state.evaluation_percent, state.evaluation_message; panel_id = "progress-evaluate"))
+    </div>
+    """
+
+    running = state.evaluation_status == "running"
+    disabled = running ? "disabled" : ""
+    refresh_tag = auto_refresh_tag(running ? 2 : 0)
+
     body = """
     <h1>Avaliar modelo</h1>
+    <p class="muted">As métricas aparecem aqui ao terminar — sem precisar abrir arquivos no disco.</p>
     $alert
+    $progress_block
     $metrics_block
     <div class="card">
       <form method="post" action="/evaluate">
-        <button class="btn" type="submit">Rodar avaliação no conjunto de teste</button>
+        <button class="btn" type="submit" $disabled>Rodar avaliação no conjunto de teste</button>
       </form>
     </div>
+    $refresh_tag
     """
     layout("Avaliar", body)
 end
 
-function run_predict!(state::InterfaceState, image_rel::String)
+function run_predict!(state::InterfaceState, image_rel::String; on_progress = nothing)
+    notify(progress) = on_progress !== nothing && on_progress(progress)
+
+    notify((; phase = :load_model, percent = 15.0, message = "Carregando modelo treinado..."))
     model, cfg = load_model_for_inference(project_relative(state, joinpath(state.cfg.checkpoint_dir, "best_model.bson")))
+
+    notify((; phase = :infer, percent = 45.0, message = "Gerando máscara com a U-Net..."))
     image_path = project_relative(state, image_rel)
     saved_path, _, probs = predict_and_save(model, image_path; cfg = cfg)
     pred_rel = rel_path(state, saved_path)
 
     comparison_rel = nothing
+    gt_rel = nothing
     gt_path = replace(image_path, r"\.png$" => "_mask.png")
     if isfile(gt_path)
+        gt_rel = rel_path(state, gt_path)
+        notify((; phase = :save, percent = 80.0, message = "Montando comparação visual..."))
         comparison_path = replace(saved_path, "_pred.png" => "_comparison.png")
-        save_comparison(image_path, probs, comparison_path; ground_truth_path = gt_path)
+        save_comparison(
+            image_path,
+            probs,
+            comparison_path;
+            ground_truth_path = gt_path,
+            target_size = cfg.image_size,
+        )
         comparison_rel = rel_path(state, comparison_path)
+    else
+        notify((; phase = :save, percent = 80.0, message = "Finalizando máscara prevista..."))
     end
-    return image_rel, pred_rel, comparison_rel
+
+    notify((; phase = :done, percent = 100.0, message = "Pronto! Veja o resultado abaixo."))
+    return (
+        image_rel = image_rel,
+        pred_rel = pred_rel,
+        comparison_rel = comparison_rel,
+        gt_rel = gt_rel,
+    )
+end
+
+function start_predict!(state::InterfaceState, image_rel::String)
+    state.predict_status == "running" && return
+    state.predict_status = "running"
+    state.predict_message = "Preparando predição..."
+    state.predict_percent = 5.0
+    state.last_predict_result = nothing
+
+    on_progress = progress -> begin
+        state.predict_percent = progress.percent
+        state.predict_message = progress.message
+    end
+
+    run_background!() do
+        try
+            state.last_predict_result = run_predict!(state, image_rel; on_progress = on_progress)
+            state.predict_status = "done"
+            state.predict_percent = 100.0
+            state.predict_message = "Máscara gerada com sucesso."
+        catch err
+            state.predict_status = "error"
+            state.predict_message = "Erro ao gerar máscara: $(format_task_error(err))"
+            log_background_error!("Predição", err)
+        end
+    end
+end
+
+function start_evaluation!(state::InterfaceState)
+    state.evaluation_status == "running" && return
+    state.evaluation_status = "running"
+    state.evaluation_message = "Preparando avaliação..."
+    state.evaluation_percent = 5.0
+
+    on_progress = progress -> begin
+        state.evaluation_percent = progress.percent
+        state.evaluation_message = progress.message
+    end
+
+    run_background!() do
+        try
+            state.last_metrics = run_evaluation!(state.cfg; on_progress = on_progress)
+            state.evaluation_status = "done"
+            state.evaluation_percent = 100.0
+            state.evaluation_message = "Avaliação concluída."
+        catch err
+            state.evaluation_status = "error"
+            state.evaluation_message = "Erro na avaliação: $(format_task_error(err))"
+            log_background_error!("Avaliação", err)
+        end
+    end
 end
 
 function start_training!(state::InterfaceState; quick::Bool = false)
@@ -398,20 +688,21 @@ function start_training!(state::InterfaceState; quick::Bool = false)
     state.training_status = "running"
     reset_training_progress!(state)
     state.training_started_at = time()
-    state.training_message = "Iniciando treinamento..."
+    state.training_message = "Preparando treinamento..."
+    state.training_percent = 3.0
 
     cfg = if quick
         Config(
             dataset_path = state.cfg.dataset_path,
-            image_size = state.cfg.image_size,
+            image_size = 64,
             train_ratio = state.cfg.train_ratio,
             val_ratio = state.cfg.val_ratio,
             test_ratio = state.cfg.test_ratio,
             random_seed = state.cfg.random_seed,
             epochs = 5,
-            batch_size = state.cfg.batch_size,
+            batch_size = 8,
             learning_rate = state.cfg.learning_rate,
-            early_stopping_patience = state.cfg.early_stopping_patience,
+            early_stopping_patience = 3,
             use_gpu = state.cfg.use_gpu,
             max_samples_per_class = 20,
             prediction_threshold = state.cfg.prediction_threshold,
@@ -425,17 +716,23 @@ function start_training!(state::InterfaceState; quick::Bool = false)
 
     on_progress = progress -> update_training_progress!(state, progress)
 
-    @async begin
+    sample_count = cfg.max_samples_per_class > 0 ? "~$(3 * cfg.max_samples_per_class)" : "dataset completo"
+    println("[Treinamento] Iniciando ($sample_count, $(cfg.epochs) épocas, $(cfg.image_size)px)...")
+
+    run_background!() do
         try
             checkpoint = run_training!(cfg; on_progress = on_progress)
             state.training_status = "done"
             state.training_percent = 100.0
             state.training_eta = ""
-            state.training_message = "Treinamento concluído. Modelo salvo em $(rel_path(state, checkpoint))."
+            state.training_checkpoint_rel = rel_path(state, checkpoint)
+            state.training_message = "Treinamento concluído com sucesso."
+            println("[Treinamento] Concluído: $(state.training_checkpoint_rel)")
         catch err
             state.training_status = "error"
             state.training_eta = ""
-            state.training_message = "Erro no treinamento: $(sprint(showerror, err))"
+            state.training_message = "Erro no treinamento: $(format_task_error(err))"
+            log_background_error!("Treinamento", err)
         end
     end
 end
@@ -463,38 +760,36 @@ function serve_interface(; project_root::String = pwd(), port::Int = INTERFACE_P
         path = uri.path
 
         if req.method == "GET" && path == "/"
-            return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], page_home(state))
+            return html_response(page_home(state))
         elseif req.method == "GET" && path == "/predict"
             if !model_ready(state)
-                return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], page_predict_form(state, "Treine o modelo antes de gerar máscaras."))
+                return html_response(page_predict(state, "Treine o modelo antes de gerar máscaras."))
             end
-            return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], page_predict_form(state))
+            return html_response(page_predict(state))
         elseif req.method == "POST" && path == "/predict"
             if !model_ready(state)
-                return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], page_predict_form(state, "Treine o modelo antes de gerar máscaras."))
+                return html_response(page_predict(state, "Treine o modelo antes de gerar máscaras."))
             end
-            form = parse_form_body(req.body)
-            image_rel = get(form, "image", "")
-            image_rel, pred_rel, comparison_rel = run_predict!(state, image_rel)
-            html = page_predict_result(state, image_rel, pred_rel, comparison_rel)
-            return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], html)
+            try
+                image_rel = save_uploaded_image!(state, req)
+                start_predict!(state, image_rel)
+                return redirect_response("/predict")
+            catch err
+                msg = sprint(showerror, err)
+                return html_response(page_predict(state, msg))
+            end
         elseif req.method == "GET" && path == "/train"
-            return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], page_train(state))
+            return html_response(page_train(state))
         elseif req.method == "POST" && path == "/train"
             form = parse_form_body(req.body)
             quick = haskey(form, "quick")
             start_training!(state; quick = quick)
-            return HTTP.Response(302, ["Location" => "/train"], "")
+            return redirect_response("/train")
         elseif req.method == "GET" && path == "/evaluate"
-            return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], page_evaluate(state))
+            return html_response(page_evaluate(state))
         elseif req.method == "POST" && path == "/evaluate"
-            try
-                state.last_metrics = run_evaluation!(state.cfg)
-                return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], page_evaluate(state))
-            catch err
-                msg = sprint(showerror, err)
-                return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8"], page_evaluate(state, msg))
-            end
+            start_evaluation!(state)
+            return redirect_response("/evaluate")
         elseif req.method == "GET" && path == "/file"
             params = URIs.queryparams(uri.query)
             rel = get(params, "path", "")
@@ -512,7 +807,12 @@ function serve_interface(; project_root::String = pwd(), port::Int = INTERFACE_P
     end
 
     println("Interface web em http://127.0.0.1:$port/")
+    if Threads.nthreads() == 1
+        println("Aviso: use 'julia --project -t auto scripts/interface.jl' para o treino não bloquear a barra de progresso.")
+    else
+        println("Threads Julia: $(Threads.nthreads())")
+    end
     println("Pressione Ctrl+C para encerrar.")
     open_browser_flag && open_browser(port)
-    HTTP.serve(handler, "127.0.0.1", port)
+    HTTP.serve(handler, "127.0.0.1", port; verbose = false)
 end
