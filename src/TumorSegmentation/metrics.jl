@@ -52,12 +52,24 @@ function run_evaluation!(cfg::Config = load_config(); on_progress = nothing)
     )
 end
 
+function _array_device(x)
+    return x isa CUDA.CuArray ? gpu : cpu
+end
+
+function _model_device(model)
+    for p in Flux.params(model)
+        return _array_device(p)
+    end
+    return cpu
+end
+
 function evaluate_model(
     model,
     dataloader;
     threshold::Float64 = 0.5,
     on_progress = nothing,
     tumor_only::Bool = false,
+    device = nothing,
 )
     notify(progress) = on_progress !== nothing && on_progress(progress)
     dice_scores = Float64[]
@@ -65,12 +77,15 @@ function evaluate_model(
     acc_scores = Float64[]
     total_batches = max(1, length(dataloader))
     batch_idx = 0
+    device = device === nothing ? _model_device(model) : device
 
     for (x, y) in dataloader
         batch_idx += 1
-        y_pred = sigmoid.(model(x))
-        for i in 1:size(x, 4)
-            true_i = y[:, :, :, i]
+        x = x |> device
+        y_cpu = y
+        y_pred = sigmoid.(model(x)) |> cpu
+        for i in 1:size(y_cpu, 4)
+            true_i = y_cpu[:, :, :, i]
             tumor_only && sum(true_i) == 0 && continue
             pred_i = y_pred[:, :, :, i]
             push!(dice_scores, dice_coefficient(pred_i, true_i; threshold = threshold))

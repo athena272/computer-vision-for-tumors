@@ -233,8 +233,30 @@ function job_progress_html(status::String, percent::Real, message::String; eta::
     """
 end
 
-function auto_refresh_tag(seconds::Int)
-    seconds > 0 ? "<meta http-equiv=\"refresh\" content=\"$seconds\">" : ""
+function auto_refresh_script(seconds::Int)
+    seconds <= 0 && return ""
+    # Reload após a página carregar (evita cancelar a resposta HTTP em andamento).
+    return """
+    <script>
+    (function () {
+      var delay = $seconds * 1000;
+      function reload() { location.reload(); }
+      if (document.readyState === "complete") setTimeout(reload, delay);
+      else window.addEventListener("load", function () { setTimeout(reload, delay); });
+    })();
+    </script>
+    """
+end
+
+function _keep_http_log(log)
+    log.level <= Info && return true
+    msg = log.message
+    msg isa String || return true
+    if occursin("handle_connection handler error", msg) &&
+       (occursin("ECANCELED", msg) || occursin("ECONNRESET", msg) || occursin("ECONNABORTED", msg))
+        return false
+    end
+    return true
 end
 
 function html_response(body::String)
@@ -492,7 +514,7 @@ function page_predict(state::InterfaceState, message::String = "")
     </div>
     """
 
-    refresh_tag = auto_refresh_tag(running ? 2 : 0)
+    refresh_script = auto_refresh_script(running ? 2 : 0)
 
     body = """
     <h1>Gerar máscara</h1>
@@ -501,7 +523,7 @@ function page_predict(state::InterfaceState, message::String = "")
     $progress_block
     $form_block
     $result_block
-    $refresh_tag
+    $refresh_script
     """
     layout("Gerar máscara", body)
 end
@@ -526,12 +548,12 @@ function page_train(state::InterfaceState)
     running = state.training_status == "running"
     form_block = running ? "" : """
       <form method="post" action="/train" style="margin-top:16px">
-        <label><input type="checkbox" name="quick" value="1" $quick_checked> Treino rápido (40 imagens/classe, 256×256, loss ponderada, ~2–3 h em CPU)</label>
+        <label><input type="checkbox" name="quick" value="1" $quick_checked> Treino rápido (40 imagens/classe, 256×256, loss ponderada; GPU se disponível)</label>
         <button class="btn warn" type="submit" $disabled>Iniciar treinamento</button>
       </form>
     """
     running_note = running ? """<p class="muted" style="margin-top:12px">Atualizando a cada 2 segundos...</p>""" : ""
-    refresh_tag = auto_refresh_tag(running ? 2 : 0)
+    refresh_script = auto_refresh_script(running ? 2 : 0)
 
     body = """
     <h1>Treinar modelo</h1>
@@ -539,8 +561,8 @@ function page_train(state::InterfaceState)
     <div class="card" style="margin-bottom:12px">
       <h2 style="margin-top:0;font-size:1rem">O que cada modo faz</h2>
       <ul class="muted" style="margin:0;padding-left:20px">
-        <li><strong>Padrão (sem marcar):</strong> usa <em>todas</em> as imagens do BUSI em $(cfg.image_size)×$(cfg.image_size), até $(cfg.epochs) épocas — em CPU pode levar muitas horas. Para acelerar, edite <code>config/default.toml</code> (ex.: <code>image_size = 128</code>, <code>epochs = 15</code>).</li>
-        <li><strong>Rápido:</strong> 40 imagens/classe, 20 épocas, 256×256, loss ponderada (auto-balanceamento de pixels de tumor) — validação usa Dice só em imagens com lesão (~2–3 h em CPU).</li>
+        <li><strong>Padrão (sem marcar):</strong> dataset completo em $(cfg.image_size)×$(cfg.image_size), até $(cfg.epochs) épocas, loss ponderada, Dice só em imagens com tumor, early stopping paciente (mín. ~8 épocas). Com GPU costuma ser bem mais rápido que em CPU.</li>
+        <li><strong>Rápido:</strong> 40 imagens/classe, 20 épocas, 256×256, loss ponderada — bom para testar; qualidade menor que o treino completo.</li>
       </ul>
     </div>
     <div class="card">
@@ -549,7 +571,7 @@ function page_train(state::InterfaceState)
       $form_block
     </div>
     $success_block
-    $refresh_tag
+    $refresh_script
     """
     layout("Treinar", body)
 end
@@ -575,7 +597,7 @@ function page_evaluate(state::InterfaceState, error_msg::String = "")
 
     running = state.evaluation_status == "running"
     disabled = running ? "disabled" : ""
-    refresh_tag = auto_refresh_tag(running ? 2 : 0)
+    refresh_script = auto_refresh_script(running ? 2 : 0)
 
     body = """
     <h1>Avaliar modelo</h1>
@@ -588,7 +610,7 @@ function page_evaluate(state::InterfaceState, error_msg::String = "")
         <button class="btn" type="submit" $disabled>Rodar avaliação no conjunto de teste</button>
       </form>
     </div>
-    $refresh_tag
+    $refresh_script
     """
     layout("Avaliar", body)
 end
@@ -712,7 +734,27 @@ function start_training!(state::InterfaceState; quick::Bool = false)
             pos_pixel_weight = 20.0,
         )
     else
-        state.cfg
+        # Treino completo: herda default.toml, mas garante loss ponderada e threshold estáveis
+        base = state.cfg
+        Config(
+            dataset_path = base.dataset_path,
+            image_size = base.image_size,
+            train_ratio = base.train_ratio,
+            val_ratio = base.val_ratio,
+            test_ratio = base.test_ratio,
+            random_seed = base.random_seed,
+            epochs = base.epochs,
+            batch_size = base.batch_size,
+            learning_rate = base.learning_rate,
+            early_stopping_patience = max(base.early_stopping_patience, 10),
+            use_gpu = base.use_gpu,
+            max_samples_per_class = 0,
+            prediction_threshold = min(base.prediction_threshold, 0.35),
+            checkpoint_dir = base.checkpoint_dir,
+            predictions_dir = base.predictions_dir,
+            tumor_sample_weight = max(base.tumor_sample_weight, 4.0),
+            pos_pixel_weight = max(base.pos_pixel_weight, 20.0),
+        )
     end
     state.training_total_epochs = cfg.epochs
 
@@ -816,5 +858,8 @@ function serve_interface(; project_root::String = pwd(), port::Int = INTERFACE_P
     end
     println("Pressione Ctrl+C para encerrar.")
     open_browser_flag && open_browser(port)
-    HTTP.serve(handler, "127.0.0.1", port; verbose = false)
+    filtered_logger = ActiveFilteredLogger(_keep_http_log, current_logger())
+    with_logger(filtered_logger) do
+        HTTP.serve(handler, "127.0.0.1", port; verbose = false)
+    end
 end

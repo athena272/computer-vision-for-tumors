@@ -3,6 +3,11 @@ function run_training!(cfg::Config = load_config(); on_progress = nothing)
 
     notify((; phase = :prepare, percent = 2.0, message = "Indexando imagens do dataset BUSI..."))
     ensure_output_dirs!(cfg)
+    device = select_device(cfg)
+    batch_size = effective_batch_size(cfg, device)
+    if batch_size != cfg.batch_size
+        @info "batch_size ajustado de $(cfg.batch_size) para $batch_size (proteção de VRAM na GPU)."
+    end
     samples = list_samples(cfg.dataset_path; max_per_class = cfg.max_samples_per_class)
     splits = split_samples(
         samples;
@@ -13,7 +18,7 @@ function run_training!(cfg::Config = load_config(); on_progress = nothing)
     loaders = create_dataloaders(
         splits;
         image_size = cfg.image_size,
-        batch_size = cfg.batch_size,
+        batch_size = batch_size,
         on_progress = on_progress,
     )
     notify((; phase = :prepare, percent = 10.0, message = "Inicializando rede U-Net..."))
@@ -36,6 +41,8 @@ function train_model!(model, train_loader, val_loader; cfg::Config = Config(), o
 
     notify(progress) = on_progress !== nothing && on_progress(progress)
     val_every = cfg.max_samples_per_class > 0 ? 2 : 1
+    # Não para nas primeiras épocas: validação com tumor oscila no início
+    min_epochs_before_stop = min(cfg.epochs, max(8, cfg.early_stopping_patience))
 
     for epoch in 1:cfg.epochs
         epoch_losses = Float32[]
@@ -63,17 +70,18 @@ function train_model!(model, train_loader, val_loader; cfg::Config = Config(), o
         val_dice = 0.0
         run_validation = val_loader !== nothing && (epoch % val_every == 0 || epoch == cfg.epochs)
         if run_validation
-            tumor_only = uses_weighted_training(cfg)
+            # Sempre avaliar em imagens com tumor: Dice global inclui "normal" (máscara vazia) e engana
+            tumor_only = true
             metrics = evaluate_model(
                 model,
                 val_loader;
                 threshold = cfg.prediction_threshold,
                 tumor_only = tumor_only,
+                device = device,
             )
             yield()
             val_dice = metrics.dice
-            dice_label = tumor_only ? "Dice validação (com tumor)" : "Dice validação"
-            println("Época $epoch/$(cfg.epochs) | loss treino: $(round(train_loss, digits=4)) | $dice_label: $(round(val_dice, digits=4))")
+            println("Época $epoch/$(cfg.epochs) | loss treino: $(round(train_loss, digits=4)) | Dice validação (com tumor): $(round(val_dice, digits=4))")
 
             notify((
                 phase = :epoch,
@@ -91,8 +99,8 @@ function train_model!(model, train_loader, val_loader; cfg::Config = Config(), o
                 println("  -> Novo melhor modelo salvo (Dice = $(round(val_dice, digits=4)))")
             else
                 patience_counter += 1
-                if patience_counter >= cfg.early_stopping_patience
-                    println("Early stopping na época $epoch.")
+                if epoch >= min_epochs_before_stop && patience_counter >= cfg.early_stopping_patience
+                    println("Early stopping na época $epoch (melhor Dice = $(round(best_val_dice, digits=4))).")
                     notify((
                         phase = :early_stop,
                         epoch = epoch,

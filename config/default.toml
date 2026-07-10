@@ -3,6 +3,7 @@ dataset_path = "docs/material/Dataset_BUSI_with_GT"
 
 # Pré-processamento
 image_size = 256
+# Dica CPU: image_size = 128 e epochs = 15 reduz o tempo de ~16 h para ~2–4 h (qualidade um pouco menor)
 
 # Divisão dos dados (treino / validação / teste)
 train_ratio = 0.70
@@ -13,15 +14,25 @@ random_seed = 42
 # Treinamento
 epochs = 30
 batch_size = 4
-learning_rate = 0.001
-early_stopping_patience = 5
-use_gpu = false
+# LR menor evita early stopping prematuro / colapso no Dice
+learning_rate = 0.0003
+# Paciente: o Dice com tumor pode oscilar nas primeiras épocas
+early_stopping_patience = 10
+
+# GPU NVIDIA (CUDA). Se true e CUDA funcionar, usa a placa; senão cai para CPU.
+# Em notebooks, o projeto limita VRAM (~4 GiB) e reduz batch em 256px para não esgotar a placa.
+# Dicas: notebook ventilado, use_gpu = false se preferir só CPU, monitore temperatura no nvidia-smi.
+use_gpu = true
 
 # Limite opcional de amostras por classe (0 = usar todas)
 max_samples_per_class = 0
 
-# Inferência
-prediction_threshold = 0.5
+# Loss ponderada (mantém a classe normal, mas evita que máscaras vazias dominem o treino)
+tumor_sample_weight = 4.0
+pos_pixel_weight = 20.0
+
+# Inferência (0.35 ajuda a visualizar tumores quando o modelo ainda é conservador)
+prediction_threshold = 0.35
 
 # Diretórios de saída
 checkpoint_dir = "outputs/checkpoints"

@@ -120,12 +120,29 @@ Edite [config/default.toml](config/default.toml) para ajustar:
 | Parâmetro | Padrão | Descrição |
 |-----------|--------|-----------|
 | `epochs` | 30 | Número máximo de épocas |
-| `batch_size` | 4 | Tamanho do lote |
+| `batch_size` | 4 | Tamanho do lote (na GPU 256px o código pode reduzir para 2) |
 | `learning_rate` | 0.001 | Taxa de aprendizado |
 | `image_size` | 256 | Redimensionamento das imagens |
 | `max_samples_per_class` | 0 | Limite por classe (0 = todas) |
+| `use_gpu` | true | Usa NVIDIA via CUDA se disponível; senão CPU |
 
 Para um teste rápido, você pode definir `max_samples_per_class = 20` e `epochs = 5`.
+
+### GPU NVIDIA (opcional)
+
+Com `use_gpu = true` e CUDA funcional, o treino usa a placa. Proteções do projeto:
+
+- Limite suave de VRAM (~4 GiB) para notebooks com 6 GB
+- `batch_size` menor em 256px na GPU
+- Fallback automático para CPU se a GPU falhar
+
+Verifique antes de treinar:
+
+```bash
+julia --project scripts/check_gpu.jl
+```
+
+Monitore temperatura/uso com `nvidia-smi`. Em notebook, mantenha ventilação e pause se a GPU passar de ~80–85 °C por muito tempo.
 
 ---
 

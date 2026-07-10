@@ -81,6 +81,8 @@ function load_config(path::String = "config/default.toml")::Config
         prediction_threshold = Float64(get(data, "prediction_threshold", 0.5)),
         checkpoint_dir = get(data, "checkpoint_dir", "outputs/checkpoints"),
         predictions_dir = get(data, "predictions_dir", "outputs/predictions"),
+        tumor_sample_weight = Float64(get(data, "tumor_sample_weight", 1.0)),
+        pos_pixel_weight = Float64(get(data, "pos_pixel_weight", 1.0)),
     )
 end
 
@@ -93,9 +95,97 @@ function ensure_output_dirs!(cfg::Config)
     mkpath(cfg.predictions_dir)
 end
 
-function select_device(cfg::Config)
-    if cfg.use_gpu
-        @warn "GPU solicitada na configuração, mas este projeto usa CPU por padrão."
+"""
+Limite suave de VRAM para notebooks (ex.: RTX 3060 6 GB).
+Deixa folga para o Windows/display e evita esgotar a memória da placa.
+"""
+const GPU_SOFT_MEMORY_LIMIT = "4GiB"
+
+function _cudnn_bin_dir()
+    for (pid, mod) in Base.loaded_modules
+        if pid.name == "CUDNN_jll" && isdefined(mod, :artifact_dir)
+            bin = joinpath(getfield(mod, :artifact_dir), "bin")
+            return isdir(bin) ? bin : nothing
+        end
     end
-    return cpu
+    return nothing
+end
+
+"""Garante que as DLLs do cuDNN estejam no PATH (necessário no Windows)."""
+function _ensure_cudnn_path!()
+    bin = _cudnn_bin_dir()
+    bin === nothing && return
+    path = get(ENV, "PATH", "")
+    if !occursin(bin, path)
+        ENV["PATH"] = bin * ";" * path
+    end
+end
+
+function _apply_gpu_soft_memory_limit!()
+    if !haskey(ENV, "JULIA_CUDA_MEMORY_LIMIT")
+        ENV["JULIA_CUDA_MEMORY_LIMIT"] = GPU_SOFT_MEMORY_LIMIT
+    end
+end
+
+"""
+Smoke test leve: 1 convolução 3×3 em GPU via Flux.
+Se falhar (ex.: cuDNN), o treino cai para CPU em vez de quebrar no meio.
+"""
+function _gpu_smoke_ok()::Bool
+    try
+        _ensure_cudnn_path!()
+        layer = Conv((3, 3), 1 => 1, pad = SamePad()) |> gpu
+        x = CUDA.rand(Float32, 16, 16, 1, 1)
+        y = layer(x)
+        CUDA.synchronize()
+        return size(y) == (16, 16, 1, 1)
+    catch e
+        @warn "Smoke test da GPU falhou; usando CPU." exception = e
+        return false
+    end
+end
+
+function select_device(cfg::Config)
+    if !cfg.use_gpu
+        return cpu
+    end
+
+    try
+        if !CUDA.functional()
+            @warn "GPU solicitada, mas CUDA não está funcional neste sistema. Usando CPU."
+            return cpu
+        end
+
+        _ensure_cudnn_path!()
+        _apply_gpu_soft_memory_limit!()
+
+        if !_gpu_smoke_ok()
+            return cpu
+        end
+
+        free_mib = round(Int, CUDA.free_memory() / 2^20)
+        total_mib = round(Int, CUDA.total_memory() / 2^20)
+        limit = get(ENV, "JULIA_CUDA_MEMORY_LIMIT", GPU_SOFT_MEMORY_LIMIT)
+        @info "GPU ativa: $(CUDA.name(CUDA.device())) | VRAM livre $(free_mib)/$(total_mib) MiB | limite suave $limit"
+        return gpu
+    catch e
+        @warn "Falha ao inicializar GPU; usando CPU." exception = e
+        return cpu
+    end
+end
+
+"""
+Batch menor na GPU em resoluções altas — U-Net 256px consome bastante VRAM
+e batches grandes aquecem mais o notebook sem ganho proporcional.
+"""
+function effective_batch_size(cfg::Config, device)
+    if device === cpu
+        return cfg.batch_size
+    end
+    if cfg.image_size >= 256
+        return min(cfg.batch_size, 2)
+    elseif cfg.image_size >= 128
+        return min(cfg.batch_size, 4)
+    end
+    return min(cfg.batch_size, 8)
 end
