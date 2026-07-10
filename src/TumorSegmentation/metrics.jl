@@ -57,10 +57,9 @@ function _array_device(x)
 end
 
 function _model_device(model)
-    for p in Flux.params(model)
-        return _array_device(p)
-    end
-    return cpu
+    ts = Flux.trainables(model)
+    isempty(ts) && return cpu
+    return _array_device(first(ts))
 end
 
 function evaluate_model(

@@ -320,14 +320,62 @@ function predict_result_html(result)
     """
 end
 
+function metrics_explanation_table_html(; dice = nothing, iou = nothing, acc_pct = nothing)
+    show_values = dice !== nothing
+    value_header = show_values ? "<th>Seu valor</th>" : ""
+    dice_value = show_values ? "<td><strong>$dice</strong></td>" : ""
+    iou_value = show_values ? "<td><strong>$iou</strong></td>" : ""
+    acc_value = show_values ? "<td><strong>$acc_pct%</strong></td>" : ""
+    dice_approx = show_values ? round(Float64(dice), digits = 2) : 0.50
+    acc_example = show_values ? acc_pct : 94.1
+    return """
+    <table class="metrics-table">
+      <thead>
+        <tr><th>Métrica</th>$value_header<th>Significado</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Dice</strong></td>
+          $dice_value
+          <td>Sobreposição entre máscara prevista e real. Escala 0–1; <strong>quanto mais perto de 1, melhor</strong>. ~$dice_approx indica que o modelo acerta boa parte do tumor, mas ainda erra bordas ou áreas.</td>
+        </tr>
+        <tr>
+          <td><strong>IoU</strong></td>
+          $iou_value
+          <td>Interseção ÷ união das máscaras. Mais rigorosa que Dice; <strong>costuma ser menor</strong>. ~0.40 é razoável para segmentação médica com dataset pequeno.</td>
+        </tr>
+        <tr>
+          <td><strong>Acurácia</strong></td>
+          $acc_value
+          <td>% de pixels corretos (tumor + fundo). <strong>Pode enganar</strong>: a maior parte da imagem é fundo, então $acc_example% de acurácia com Dice ~$dice_approx é comum — o modelo acerta o fundo e ainda erra parte do tumor.</td>
+        </tr>
+      </tbody>
+    </table>
+    """
+end
+
 function metrics_result_html(m)
     acc_pct = round(100 * m.accuracy, digits = 1)
+    dice = round(m.dice, digits = 4)
+    iou = round(m.iou, digits = 4)
     return """
     <div class="metrics-grid">
-      <div class="metric-box"><span>Dice</span><strong>$(round(m.dice, digits = 4))</strong></div>
-      <div class="metric-box"><span>IoU</span><strong>$(round(m.iou, digits = 4))</strong></div>
-      <div class="metric-box"><span>Acurácia</span><strong>$(acc_pct)%</strong></div>
+      <div class="metric-box">
+        <span class="metric-label">Dice</span>
+        <strong>$dice</strong>
+      </div>
+      <div class="metric-box">
+        <span class="metric-label">IoU</span>
+        <strong>$iou</strong>
+      </div>
+      <div class="metric-box">
+        <span class="metric-label">Acurácia</span>
+        <strong>$acc_pct%</strong>
+      </div>
     </div>
+    <h3 class="section-title">O que significam suas métricas</h3>
+    $(metrics_explanation_table_html(; dice, iou, acc_pct))
+    <p class="muted" style="margin-top:16px">Médias no conjunto de teste (todas as classes). No treino, o Dice de validação usa só imagens com tumor; aqui entram também imagens <em>normal</em>, o que tende a baixar Dice e IoU. Para julgar a segmentação do tumor, priorize Dice e IoU.</p>
     """
 end
 
@@ -373,6 +421,11 @@ function layout(title::String, body::String)
         .metrics-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin-top: 12px; }
         .metric-box { background: #0f172a; border-radius: 10px; padding: 14px; text-align: center; border: 1px solid #334155; }
         .metric-box strong { display: block; font-size: 1.4rem; color: #f8fafc; margin-top: 4px; }
+        .metric-label { font-weight: 600; }
+        .metrics-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.92rem; }
+        .metrics-table th, .metrics-table td { border: 1px solid #334155; padding: 10px 12px; text-align: left; vertical-align: top; }
+        .metrics-table th { background: #0f172a; color: #e2e8f0; }
+        .metrics-table td:first-child { white-space: nowrap; width: 90px; }
         .section-title { margin: 24px 0 8px; font-size: 1.1rem; color: #e2e8f0; }
       </style>
     </head>
@@ -585,6 +638,14 @@ function page_evaluate(state::InterfaceState, error_msg::String = "")
         <div class="card status ok">
           <h2>Resultado no conjunto de teste</h2>
           $(metrics_result_html(state.last_metrics))
+        </div>
+        """
+    else
+        metrics_block = """
+        <div class="card">
+          <h2>O que significam as métricas</h2>
+          <p class="muted" style="margin-top:0">Após rodar a avaliação, seus valores aparecem na tabela abaixo.</p>
+          $(metrics_explanation_table_html())
         </div>
         """
     end
